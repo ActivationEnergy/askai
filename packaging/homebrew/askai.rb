@@ -4,8 +4,8 @@
 class Askai < Formula
   desc "Ask AI for shell commands, then choose what to run"
   homepage "https://github.com/ActivationEnergy/askai"
-  url "https://github.com/ActivationEnergy/askai.git", using: :git, tag: "v0.1.0"
-  version "0.1.0"
+  url "https://github.com/ActivationEnergy/askai.git", using: :git, tag: "v0.1.1"
+  version "0.1.1"
   license "MIT"
 
   depends_on "python@3.14"

@@ -53,7 +53,7 @@ class SecurityRegressions(unittest.TestCase):
                 result = subprocess.run([shell, *flags, "-c", f"source {shlex.quote(str(init))}; askai --version"],
                                         env=env, cwd=project, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("0.1.0", result.stdout)
+                self.assertIn("0.1.1", result.stdout)
                 self.assertFalse(marker.exists())
                 if shell in ("zsh", "bash"):
                     # Exercise the Han probe without making a model request.

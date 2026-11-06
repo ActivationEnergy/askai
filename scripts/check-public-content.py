@@ -3,6 +3,8 @@
 
 Findings omit matched values. This checks recognizable patterns, not every
 possible personal fact. Run before publishing, in addition to human review.
+Normal author, committer and tagger attribution is intentionally public;
+private paths and credential patterns are still checked in those fields.
 """
 
 import argparse
@@ -15,7 +17,6 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-IDENTITY = b"askai maintainers <maintainers@askai.invalid>"
 PATTERNS = {
     "absolute home directory": re.compile(rb"/(?:Users|home)/[^/\s<>`'\"\\]+"),
     "Windows home directory": re.compile(rb"[A-Za-z]:\\Users\\[^\\\s<>`'\"]+"),
@@ -39,6 +40,21 @@ def scan(raw: bytes, identities: set[bytes]) -> set[str]:
     for identity in identities:
         if re.search(rb"(?<![A-Za-z0-9_])" + re.escape(identity) + rb"(?![A-Za-z0-9_])", raw, re.I):
             findings.add("local user or host identifier")
+    return findings
+
+
+def scan_git_object(raw: bytes, kind: str, identities: set[bytes]) -> set[str]:
+    """Allow normal Git attribution while retaining path/secret checks everywhere."""
+    if kind == "blob":
+        return scan(raw, identities)
+    headers, _, message = raw.partition(b"\n\n")
+    findings = scan(message, identities)
+    for line in headers.splitlines():
+        if line.startswith((b"author ", b"committer ", b"tagger ")):
+            # Names and emails in these fields are intentional public credit.
+            findings.update(label for label, pattern in PATTERNS.items() if pattern.search(line))
+        else:
+            findings.update(scan(line, identities))
     return findings
 
 
@@ -71,13 +87,7 @@ def main() -> int:
                 continue
             objects += 1
             raw = git("cat-file", kind, oid)
-            findings = scan(raw, identities)
-            if kind in {"commit", "tag"}:
-                for line in raw.split(b"\n\n", 1)[0].splitlines():
-                    if line.startswith((b"author ", b"committer ", b"tagger ")):
-                        person = line.split(b" ", 1)[1].rsplit(b" ", 2)[0]
-                        if person != IDENTITY:
-                            findings.add("non-anonymous Git identity")
+            findings = scan_git_object(raw, kind, identities)
             if findings:
                 problems += 1
                 print(f"Object #{objects} ({kind}): {', '.join(sorted(findings))}")
