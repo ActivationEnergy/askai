@@ -4,8 +4,8 @@
 class Askai < Formula
   desc "Ask AI for shell commands, then choose what to run"
   homepage "https://github.com/ActivationEnergy/askai"
-  url "https://github.com/ActivationEnergy/askai.git", using: :git, tag: "v0.1.2"
-  version "0.1.2"
+  url "https://github.com/ActivationEnergy/askai.git", using: :git, tag: "v0.1.3"
+  version "0.1.3"
   license "MIT"
 
   depends_on "python@3.14"
@@ -14,11 +14,11 @@ class Askai < Formula
     # No third-party runtime dependencies: keep modules private to this formula.
     libexec.install "src/askai_cli"
     (bin/"askai").write <<~PYTHON
-      #!#{formula_opt_bin("python@3.14")}/python3.14
+      #!#{formula_opt_bin("python@3.14")}/python3.14 -I
       import sys
       sys.path.insert(0, #{opt_libexec.to_s.inspect})
       from askai_cli.cli import main
-      main()
+      main(launcher=(#{(opt_bin/"askai").to_s.inspect},))
     PYTHON
     (bin/"askai").chmod 0755
     (bin/"askai-config").make_symlink "askai"
@@ -46,6 +46,17 @@ class Askai < Formula
       assert_match version.to_s, shell_output("#{bin}/#{name} --version")
     end
     assert_match "function askgpt", shell_output("#{bin}/askai init fish --aliases")
+    # Source the installed integration, rather than testing only external aliases.
+    [Pathname("/bin/bash"), Pathname("/bin/zsh"), HOMEBREW_PREFIX/"bin/fish"].each do |shell|
+      next unless shell.executable?
+
+      init = testpath/"init.#{shell.basename}"
+      init.write shell_output("#{bin}/askai init #{shell.basename} --aliases")
+      assert_match (opt_bin/"askai").to_s, init.read
+      command = "source #{init.to_s.shellescape}; askcc --version; askdsh --version"
+      result = shell_output("#{shell} -c #{command.shellescape}")
+      assert_equal [version.to_s, version.to_s], result.lines.map(&:strip)
+    end
 
     # Exercise the installed prompt, parser and print mode without credentials.
     (testpath/"fake_model.py").write <<~PYTHON

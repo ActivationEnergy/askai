@@ -7,7 +7,7 @@ import sys
 from .registry import SHORTCUTS
 
 
-def _hook(shell: str) -> str:
+def _hook(shell: str, runner: str) -> str:
     if shell == "fish":
         return '''functions -q fish_command_not_found; or functions fish_command_not_found >/dev/null 2>&1
 set -l _askai_current (functions fish_command_not_found | string collect)
@@ -40,9 +40,7 @@ end
     name = "command_not_found_handler" if shell == "zsh" else "command_not_found_handle"
     check = f"(( $+functions[{name}] ))" if shell == "zsh" else f"declare -F {name} >/dev/null"
     unexport = "typeset -g +x __askai_handler_definition" if shell == "zsh" else "export -n __askai_handler_definition"
-    probe = ("import sys,unicodedata;sys.exit(0 if sum(unicodedata.name(c,'').startswith("
-             "('CJK UNIFIED IDEOGRAPH-','CJK COMPATIBILITY IDEOGRAPH-')) for c in sys.argv[1])>=2 else 1)")
-    han = " ".join(shlex.quote(s) for s in (sys.executable, "-I", "-c", probe))
+    han = f"{runner} __askai_han_probe --"
     return f'''if {"(( BASH_VERSINFO[0] < 4 ))" if shell == "bash" else "false"}; then
     printf '%s\\n' 'askai: Bash 4+ 才支持未知命令接管；当前版本仅启用显式集成。' >&2
 elif {check} && [ "$(typeset -f {name})" != "${{__askai_handler_definition-}}" ]; then
@@ -79,12 +77,26 @@ def shortcuts(shell: str) -> str:
                    for name, provider in SHORTCUTS.items())
 
 
-def integration(shell: str, hook: bool = False, aliases: bool = False) -> str:
-    # Keep stable installation symlinks intact: resolving Homebrew's opt link
-    # would freeze this long-lived shell function to a removable Cellar keg.
+def _launcher(launcher: tuple[str, ...] | None) -> tuple[str, ...]:
+    """Bind generated functions to the installation, without resolving opt links.
+
+    Entry scripts may supply their trusted stable path. Normal virtualenvs use
+    their unversioned interpreter; other library callers retain the isolated
+    bootstrap, whose lifetime is limited to that interpreter and package root.
+    """
+    if launcher is not None:
+        return launcher
+    prefix = Path(sys.prefix)
+    if (prefix / "pyvenv.cfg").is_file() and Path(__file__).resolve().is_relative_to(prefix.resolve()):
+        return (str(prefix / "bin/python"), "-I", "-m", "askai_cli")
     code = (f"import sys; sys.path.insert(0, {str(Path(__file__).absolute().parents[1])!r}); "
             "from askai_cli.cli import main; main()")
-    runner = " ".join(shlex.quote(s) for s in (sys.executable, "-I", "-c", code))
+    return (sys.executable, "-I", "-c", code)
+
+
+def integration(shell: str, hook: bool = False, aliases: bool = False,
+                *, launcher: tuple[str, ...] | None = None) -> str:
+    runner = " ".join(shlex.quote(s) for s in _launcher(launcher))
     if shell == "fish":
         script = f'''function askai --description 'Ask AI for a shell command'
     set -l _askai_file (command mktemp "${{TMPDIR:-/tmp}}/askai.XXXXXXXXXX")
@@ -108,7 +120,7 @@ end
                                 '        set _askai_tmp "$TMPDIR"\n    end\n'
                                 '    set -l _askai_file (command mktemp "$_askai_tmp/askai.XXXXXXXXXX")')
         if hook:
-            script += _hook(shell)
+            script += _hook(shell, runner)
         return script + (shortcuts(shell) if aliases else "")
     script = f'''askai() {{
     local _askai_file _askai_rc
@@ -127,5 +139,5 @@ end
 }}
 '''
     if hook:
-        script += _hook(shell)
+        script += _hook(shell, runner)
     return script + (shortcuts(shell) if aliases else "")

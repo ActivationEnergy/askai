@@ -38,7 +38,7 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def management(argv: list[str]) -> int | None:
+def management(argv: list[str], *, launcher: tuple[str, ...] | None = None) -> int | None:
     # Only a leading sequence of color options can precede a management verb.
     # The real parser validates all occurrences together, in original order.
     start = 0
@@ -61,7 +61,7 @@ def management(argv: list[str]) -> int | None:
         p.add_argument("--aliases", action="store_true", help="启用 askgpt、askds、askglm 等快捷入口")
         args = p.parse_args(options)
         configure(explicit=args.color)
-        print(integration(args.shell, args.hook, args.aliases), end="")
+        print(integration(args.shell, args.hook, args.aliases, launcher=launcher), end="")
         return 0
     args = p.parse_args(options)
     configure(explicit=args.color)
@@ -188,10 +188,18 @@ def request_suggestions(provider, model, system, prompt, timeout, trace, diagnos
             raise AskError(f"模型回答修正后仍不符合格式要求：{second_error}；未执行任何命令。可加 --debug 查看原始回答。") from second_error
 
 
-def run(argv: list[str] | None = None) -> int:
+def run(argv: list[str] | None = None, *, launcher: tuple[str, ...] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    # Private hook probe: no configuration, model request or terminal output.
+    if argv[:1] == ["__askai_han_probe"]:
+        if len(argv) != 3 or argv[1] != "--":
+            return 2
+        import unicodedata
+        count = sum(unicodedata.name(c, "").startswith(
+            ("CJK UNIFIED IDEOGRAPH-", "CJK COMPATIBILITY IDEOGRAPH-")) for c in argv[2])
+        return 0 if count >= 2 else 1
     configure()
-    managed = management(argv)
+    managed = management(argv, launcher=launcher)
     if managed is not None:
         return managed
     p = parser()
@@ -311,7 +319,7 @@ def run(argv: list[str] | None = None) -> int:
     return subprocess.call([shell, "-c", command])
 
 
-def main() -> None:
+def main(*, launcher: tuple[str, ...] | None = None) -> None:
     configure()
     try:
         if Path(sys.argv[0]).name == "askai-config":
@@ -321,7 +329,7 @@ def main() -> None:
         provider = SHORTCUTS.get(Path(sys.argv[0]).name)
         if provider:
             argv = ["--provider", provider, *argv]
-        code = run(argv)
+        code = run(argv, launcher=launcher)
     except AskError as exc:
         Terminal(sys.stderr).notice("askai", str(exc), "error")
         code = 1

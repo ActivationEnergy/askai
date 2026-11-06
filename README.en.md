@@ -230,13 +230,14 @@ brew update
 brew upgrade --formula ActivationEnergy/tap/askai
 ```
 
-Homebrew integration uses a stable installation path so existing commands can follow upgrades. When upgrading from 0.1.1 or earlier, reload the old functions already loaded in your current terminal once. In Fish:
+The updated Homebrew integration launches through a stable entry point, without storing version-specific application or Python paths in shell functions. Once loaded, it follows normal upgrades and reinstalls in the same terminal. When migrating from older integration, reload the functions already loaded in your current terminal once. In Fish:
 
 ```fish
-command askai init fish --aliases | source
+functions -e askai askdsh askgpt askds askcc askkimi askmm askglm
+/opt/homebrew/opt/askai/bin/askai init fish --aliases | source
 ```
 
-Alternatively, open a new terminal. Reloading only refreshes functions in the current session; it does not edit configuration files.
+This path is for a default Apple Silicon Homebrew installation; use `brew --prefix askai` for other locations. Alternatively, open a new terminal. Uninstalling and reinstalling does not clear functions already loaded in an open terminal. Reloading only refreshes the current session and does not edit configuration files.
 
 If you enabled shell integration, first remove askai's terminal settings through `askai-config`, then uninstall:
 

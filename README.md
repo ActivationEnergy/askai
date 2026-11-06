@@ -234,13 +234,14 @@ brew update
 brew upgrade --formula ActivationEnergy/tap/askai
 ```
 
-Homebrew 集成使用稳定安装路径，已有命令可跟随版本升级。如果从 0.1.1 或更早版本升级，当前窗口中已经加载的旧函数需重载一次；Fish 可执行：
+新版 Homebrew 集成通过稳定入口启动，不在 Shell 函数中保存具体版本的程序或 Python 路径。加载新版集成后，同一终端中的命令可跟随正常升级和重装。从旧版集成迁移时，当前窗口中的旧函数仍需重载一次；Fish 可执行：
 
 ```fish
-command askai init fish --aliases | source
+functions -e askai askdsh askgpt askds askcc askkimi askmm askglm
+/opt/homebrew/opt/askai/bin/askai init fish --aliases | source
 ```
 
-也可以重新打开终端。此操作只刷新当前窗口的函数，不修改配置文件。
+上例路径适用于 Apple Silicon 默认 Homebrew 安装；其他安装位置可用 `brew --prefix askai` 查看。也可以重新打开终端。卸载重装不会清除已打开窗口中的旧函数；以上操作只刷新当前窗口，不修改配置文件。
 
 卸载前，如已配置终端集成，可先运行 `askai-config` 移除 askai 添加的终端设置，再执行：
 
