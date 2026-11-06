@@ -230,7 +230,13 @@ brew update
 brew upgrade --formula ActivationEnergy/tap/askai
 ```
 
-Open a new terminal after upgrading to refresh any loaded shell functions.
+Homebrew integration uses a stable installation path so existing commands can follow upgrades. When upgrading from 0.1.1 or earlier, reload the old functions already loaded in your current terminal once. In Fish:
+
+```fish
+command askai init fish --aliases | source
+```
+
+Alternatively, open a new terminal. Reloading only refreshes functions in the current session; it does not edit configuration files.
 
 If you enabled shell integration, first remove askai's terminal settings through `askai-config`, then uninstall:
 

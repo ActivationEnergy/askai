@@ -27,6 +27,7 @@ Dir.mktmpdir("askai-formula-") do |directory|
   %w[src README.md examples].each { |name| FileUtils.cp_r(root/name, source/name) }
   prefix = temporary/"prefix"
   formula.define_singleton_method(:prefix) { |*_args| prefix }
+  formula.define_singleton_method(:opt_prefix) { prefix }
   Dir.chdir(source) { formula.install }
 
   testpath = temporary/"test"

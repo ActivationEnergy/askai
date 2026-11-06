@@ -4,8 +4,8 @@
 class Askai < Formula
   desc "Ask AI for shell commands, then choose what to run"
   homepage "https://github.com/ActivationEnergy/askai"
-  url "https://github.com/ActivationEnergy/askai.git", using: :git, tag: "v0.1.1"
-  version "0.1.1"
+  url "https://github.com/ActivationEnergy/askai.git", using: :git, tag: "v0.1.2"
+  version "0.1.2"
   license "MIT"
 
   depends_on "python@3.14"
@@ -16,7 +16,7 @@ class Askai < Formula
     (bin/"askai").write <<~PYTHON
       #!#{formula_opt_bin("python@3.14")}/python3.14
       import sys
-      sys.path.insert(0, #{libexec.to_s.inspect})
+      sys.path.insert(0, #{opt_libexec.to_s.inspect})
       from askai_cli.cli import main
       main()
     PYTHON

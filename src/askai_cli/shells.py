@@ -80,8 +80,9 @@ def shortcuts(shell: str) -> str:
 
 
 def integration(shell: str, hook: bool = False, aliases: bool = False) -> str:
-    # A fixed import path works both from a checkout and from an installed tool.
-    code = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
+    # Keep stable installation symlinks intact: resolving Homebrew's opt link
+    # would freeze this long-lived shell function to a removable Cellar keg.
+    code = (f"import sys; sys.path.insert(0, {str(Path(__file__).absolute().parents[1])!r}); "
             "from askai_cli.cli import main; main()")
     runner = " ".join(shlex.quote(s) for s in (sys.executable, "-I", "-c", code))
     if shell == "fish":

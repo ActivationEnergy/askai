@@ -234,7 +234,13 @@ brew update
 brew upgrade --formula ActivationEnergy/tap/askai
 ```
 
-升级后请重新打开终端，更新已经加载的 Shell 函数。
+Homebrew 集成使用稳定安装路径，已有命令可跟随版本升级。如果从 0.1.1 或更早版本升级，当前窗口中已经加载的旧函数需重载一次；Fish 可执行：
+
+```fish
+command askai init fish --aliases | source
+```
+
+也可以重新打开终端。此操作只刷新当前窗口的函数，不修改配置文件。
 
 卸载前，如已配置终端集成，可先运行 `askai-config` 移除 askai 添加的终端设置，再执行：
 

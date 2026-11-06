@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from askai_cli import core, providers, scripts, setup, shells, startup
+from askai_cli import __version__, core, providers, scripts, setup, shells, startup
 from askai_cli.cli import choose, request_suggestions
 from askai_cli.debug import DebugTrace
 from askai_cli.terminal import ColorPolicy, Terminal
@@ -53,7 +53,7 @@ class SecurityRegressions(unittest.TestCase):
                 result = subprocess.run([shell, *flags, "-c", f"source {shlex.quote(str(init))}; askai --version"],
                                         env=env, cwd=project, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("0.1.1", result.stdout)
+                self.assertIn(__version__, result.stdout)
                 self.assertFalse(marker.exists())
                 if shell in ("zsh", "bash"):
                     # Exercise the Han probe without making a model request.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "askai-cli"
-version = "0.1.1"
+version = "0.1.2"
 description = "Ask your terminal for commands, with your choice of AI backend."
 readme = "README.md"
 license = "MIT"
