@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "askai-cli"
+version = "0.1.0"
+description = "Ask your terminal for commands, with your choice of AI backend."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+askai = "askai_cli.cli:main"
+askai-config = "askai_cli.cli:main"
+askgpt = "askai_cli.cli:main"
+askds = "askai_cli.cli:main"
+askglm = "askai_cli.cli:main"
+askkimi = "askai_cli.cli:main"
+askmm = "askai_cli.cli:main"
+askdsh = "askai_cli.cli:main"
+askcc = "askai_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+askai_cli = ["prompts/*.txt", "prompts/*.mjs"]

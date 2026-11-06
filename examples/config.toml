@@ -1,0 +1,56 @@
+# 复制到 ~/.config/askai/config.toml；也可通过 ASKAI_CONFIG 指定路径。
+provider = "auto"
+timeout = 120
+
+[ui]
+# auto 跟随终端/NO_COLOR；always/never 明确覆盖环境默认。
+color = "auto"
+
+[providers.codex]
+# 默认复用 Codex 自己的登录状态、模型和服务地址。
+executable = "codex"
+# 默认可查询官方网页以核实安装步骤等信息；关闭时设为 false。
+web_search = true
+# model = "你的 Codex 模型名"
+
+[providers.claude]
+# 仅在 askai --provider claude 或默认 provider 明确指定时调用。
+executable = "claude"
+
+[providers.dsh]
+executable = "dsh"
+# 临时 headless 配置复用 DSH 保存的凭据；默认沿用其模型。
+# model = "你的 DSH 模型名"
+
+[providers.deepseek]
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+model = "deepseek-flash"
+
+[providers.kimi]
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "MOONSHOT_API_KEY"
+model = "kimi-k3.1-pro"
+
+[providers.minimax]
+base_url = "https://api.minimax.cn/v1"
+api_key_env = "MINIMAX_API_KEY"
+model = "MiniMax-M3.1-Flash"
+
+[providers.glm]
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+api_key_env = "GLM_API_KEY"
+model = "glm-5.3"
+
+# 其他 OpenAI 兼容服务（密钥只从环境变量读取）:
+# [providers.local]
+# type = "api"
+# base_url = "http://localhost:1234/v1"
+# api_key_env = "LOCAL_API_KEY"
+# model = "your-model"
+
+# 其他已登录 CLI：args 是 argv 数组，不通过 shell 解释；prompt 经 stdin 传入。
+# [providers.other]
+# type = "command"
+# executable = "your-cli"
+# args = ["--print", "--no-tools"]
