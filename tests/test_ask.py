@@ -74,9 +74,16 @@ def terminal(argv, env, inputs=("1\n",), timeout=15, prompt_markers=None):
                             sent += 1
                             observed = position + len(marker)
                 else:
-                    count = output.count("[默认 q]: ".encode()) + output.count("保存路径（无需引号，回车取消）: ".encode())
+                    count = output.count("[默认 q]:".encode()) + output.count("保存路径（无需引号，回车取消）:".encode())
                     if count > observed and sent < len(inputs):
-                        os.write(fd, inputs[sent].encode())
+                        keys = inputs[sent]
+                        # Single-key menus no longer echo or require a newline;
+                        # text prompts and basic-terminal menus still do.
+                        menu_at = output.rfind("[默认 q]:".encode())
+                        text_at = output.rfind("保存路径（无需引号，回车取消）:".encode())
+                        if menu_at > text_at and any(hint.encode() in output for hint in ("按编号立即执行", "按键选择")):
+                            keys = keys.rstrip("\n") or "\r"
+                        os.write(fd, keys.encode())
                         sent += 1
                         observed = count
             waited, status = os.waitpid(pid, os.WNOHANG)
@@ -150,11 +157,11 @@ class ModelOutputTests(unittest.TestCase):
                     self.assertEqual(json.loads(result.stdout), [literal, args])
                     self.assertFalse(marker.exists())
 
-    def test_temporary_python_preserves_stdin_cwd_imports_args_and_exit_code(self):
+    def test_temporary_python_preserves_stdin_cwd_explicit_imports_args_and_exit_code(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder).resolve()
             (path / "local_helper.py").write_text("VALUE = 'local import works'\n")
-            code = ("import json,sys,os,local_helper\n"
+            code = ("import json,sys,os\nsys.path.insert(0,os.getcwd())\nimport local_helper\n"
                     "print(json.dumps({'file':__file__, 'cwd':os.getcwd(), 'args':sys.argv[1:], "
                     "'input':input(), 'local':local_helper.VALUE, 'env':os.environ['ASKAI_SCRIPT_TEST']}))\n"
                     "sys.exit(7)")
@@ -287,7 +294,7 @@ else:
         config.write_text('provider = "test"\n[providers.test]\ntype = "command"\n'
                           f'executable = {json.dumps(str(self.fake))}\n')
         self.env = {**os.environ, "ASKAI_CONFIG": str(config), "ASKAI_TEST_ANSWER": json.dumps(response()),
-                    "SHELL": "/bin/bash", "ASKAI_NO_SETUP": "1"}
+                    "SHELL": "/bin/bash", "ASKAI_NO_SETUP": "1", "ASKAI_WRAPPER_PROTOCOL": "2"}
         for name in ("ASKAI_PROVIDER", "ASKAI_MODEL", "ASKAI_SHELL", "ASKAI_COMMAND_FILE", "BASH_ENV", "ENV"):
             self.env.pop(name, None)
 
@@ -356,7 +363,7 @@ else:
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(marker.exists())
             if mode == ("--print",):
-                self.assertEqual(shlex.split(result.stdout)[2], item["code"])
+                self.assertEqual(shlex.split(result.stdout)[5], item["code"])
                 self.assertNotIn("askai-python-", result.stdout)
             elif mode == ("--json",):
                 self.assertEqual(json.loads(result.stdout)["commands"], [item])
@@ -380,9 +387,9 @@ else:
                 self.assertEqual(copied, source)
             else:
                 copied_argv = shlex.split(copied)
-                self.assertEqual(copied_argv[:2], ["python3", "-c"])
-                self.assertEqual(copied_argv[2], source)
-                self.assertEqual(copied_argv[3:], item["args"])
+                self.assertEqual(copied_argv[:5], ["python3", "-I", "-X", "utf8", "-c"])
+                self.assertEqual(copied_argv[5], source)
+                self.assertEqual(copied_argv[6:], item["args"])
                 self.assertNotIn("askai-python-", copied)
         saved = self.path / "saved script.py"
         code, output = terminal([str(ASKAI), "Python task"], self.env, ("s1\n", str(saved) + "\n"))
@@ -393,15 +400,16 @@ else:
         self.assertEqual(selected.read_text(), "")
         self.assertIn("运行命令:", output)
         saved_command = output.split("运行命令:", 1)[1].strip().splitlines()[0]
-        self.assertEqual(shlex.split(saved_command), ["python3", str(saved), *item["args"]])
+        self.assertEqual(shlex.split(saved_command), ["python3", "-I", "-X", "utf8", str(saved), *item["args"]])
         result = subprocess.run(["bash", "--noprofile", "--norc", "-c", saved_command],
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(marker.exists())
         marker.unlink()
         saved.write_text("KEEP EXISTING FILE")
-        code, output = terminal([str(ASKAI), "Python task"], self.env, ("s1\n", str(saved) + "\n"))
-        self.assertEqual(code, 1, output)
+        code, output = terminal([str(ASKAI), "Python task"], {**self.env, "TERM": "xterm-256color"}, ("s1", str(saved) + "\n", "q"),
+                                prompt_markers=("[默认 q]:", "保存路径（无需引号，回车取消）:", "[默认 q]:"))
+        self.assertEqual(code, 0, output)
         self.assertIn("未覆盖", output)
         self.assertEqual(saved.read_text(), "KEEP EXISTING FILE")
         self.assertFalse(marker.exists())
@@ -441,8 +449,8 @@ else:
         self.assertIn("第 1 条命令已放入剪贴板", output)
         for name in ("pbcopy", "wl-copy", "xclip", "xsel", "clip.exe"):
             (self.path / name).write_text(f"#!{sys.executable}\nimport sys\nprint('clipboard unavailable', file=sys.stderr)\nsys.exit(1)\n")
-        code, output = terminal([str(ASKAI), "test question"], self.env, ("c1\n",))
-        self.assertEqual(code, 1, output)
+        code, output = terminal([str(ASKAI), "test question"], self.env, ("c1\n", "q\n"))
+        self.assertEqual(code, 0, output)
         self.assertIn("clipboard unavailable", output)
         self.assertEqual(selected.read_text(), "")
         self.assertFalse(marker.exists())
@@ -503,8 +511,8 @@ else:
     def test_wrong_shell_cannot_execute_through_current_shell_wrapper(self):
         selected = self.path / "selected"
         self.env.update(ASKAI_COMMAND_FILE=str(selected), ASKAI_SHELL="fish")
-        code, output = terminal([str(ASKAI), "--shell", "bash", "test question"], self.env)
-        self.assertEqual(code, 1, output)
+        code, output = terminal([str(ASKAI), "--shell", "bash", "test question"], self.env, ("1\n", "q\n"))
+        self.assertEqual(code, 0, output)
         self.assertIn("目标 shell 与当前集成不同", output)
         self.assertEqual(selected.read_text(), "")
 

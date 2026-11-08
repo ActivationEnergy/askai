@@ -25,7 +25,7 @@ class DshPolicyTests(unittest.TestCase):
         value = dsh_patch(model)
         for expected in ("mode: read-only", "policy: never", "defaultPreset: read-only",
                          "- id: credentials\n  disabled: false", "- id: askai-no-tools",
-                         "inject: [headlessStartup, askaiToolGuard]", "mode: native",
+                         "inject: [headlessStartup, askaiToolGuard, askaiCallSettings]", "mode: native",
                          json.dumps(str(PLUGIN)), json.dumps(model)):
             self.assertIn(expected, value)
         self.assertNotIn("--permission-mode", value)

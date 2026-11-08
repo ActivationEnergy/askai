@@ -22,6 +22,7 @@ class ProviderSpec:
     models: tuple[ModelSpec, ...] = ()
     models_source: str = ""
     models_checked_on: str = ""
+    reasoning_levels: tuple[str, ...] = ()
 
     def __post_init__(self):
         # Configuration merging must never mutate the built-in preset.
@@ -40,7 +41,8 @@ SPECS = (
     ProviderSpec("claude", "Claude Code", "askcc",
                  {"type": "claude", "executable": "claude"}, 4),
     ProviderSpec("dsh", "DSH", "askdsh",
-                 {"type": "dsh", "executable": "dsh"}, 3, 2),
+                 {"type": "dsh", "executable": "dsh", "reasoning_effort": "low"}, 3, 2,
+                 reasoning_levels=("off", "low", "high", "max")),
     ProviderSpec("deepseek", "DeepSeek", "askds",
                  {"type": "api", "base_url": "https://api.deepseek.com", "api_key_env": "DEEPSEEK_API_KEY"}, 2, 3,
                  (ModelSpec("deepseek-flash", "DeepSeek Flash"), ModelSpec("deepseek-v4-pro", "DeepSeek Pro")),
@@ -84,3 +86,18 @@ def common_models(name: str, provider: dict) -> tuple[ModelSpec, ...]:
             or base.rstrip("/") != spec.defaults.get("base_url")):
         return ()
     return spec.models
+
+
+def reasoning_levels(provider: dict) -> tuple[str, ...]:
+    """Only advertise levels implemented by this backend adapter."""
+    return next((spec.reasoning_levels for spec in SPECS
+                 if spec.defaults.get("type") == provider.get("type")), ())
+
+
+def implicit_model_label(provider: dict) -> str:
+    """Describe unset model behavior without claiming native settings were read."""
+    if provider.get("type") == "claude":
+        return "Claude 隔离设置（不读取用户/项目设置文件，型号未确认）"
+    if provider.get("type") == "api":
+        return "未配置具体模型"
+    return "沿用 CLI 当前配置（实际型号未确认）"

@@ -21,6 +21,8 @@ executable = "claude"
 executable = "dsh"
 # 临时 headless 配置复用 DSH 保存的凭据；默认沿用其模型。
 # model = "你的 DSH 模型名"
+# 首次请求默认低强度；回答后可按 r 临时调整，不改此配置。
+reasoning_effort = "low"  # off / low / high / max
 
 [providers.deepseek]
 base_url = "https://api.deepseek.com"

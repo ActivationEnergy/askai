@@ -5,6 +5,7 @@ import shlex
 import sys
 
 from .registry import SHORTCUTS
+from .execution import PROTOCOL, SELECTED, EXECUTED, WRAPPER_FLAG
 
 
 def _hook(shell: str, runner: str) -> str:
@@ -99,42 +100,66 @@ def integration(shell: str, hook: bool = False, aliases: bool = False,
     runner = " ".join(shlex.quote(s) for s in _launcher(launcher))
     if shell == "fish":
         script = f'''function askai --description 'Ask AI for a shell command'
-    set -l _askai_file (command mktemp "${{TMPDIR:-/tmp}}/askai.XXXXXXXXXX")
-    if test $status -ne 0
+    set -l _askai_tmp /tmp
+    if set -q TMPDIR; and test -n "$TMPDIR"
+        set _askai_tmp "$TMPDIR"
+    end
+    set -l _askai_file (command mktemp "$_askai_tmp/askai.XXXXXXXXXX")
+    or return 1
+    command env ASKAI_SHELL=fish ASKAI_WRAPPER_PROTOCOL={PROTOCOL} ASKAI_COMMAND_FILE="$_askai_file" {runner} {WRAPPER_FLAG} $argv
+    set -l _askai_rc $status
+    set -l _askai_payload
+    if test $_askai_rc -eq {SELECTED}; or test $_askai_rc -eq {EXECUTED}
+        set _askai_payload (string collect < "$_askai_file")
+    end
+    command rm -f -- "$_askai_file"
+    set -e _askai_file
+    if test $_askai_rc -eq {SELECTED}
+        if not test -n "$_askai_payload"
+            return 1
+        end
+        set -lu ASKAI_COMMAND_FILE
+        set -lu ASKAI_WRAPPER_PROTOCOL
+        set -lu ASKAI_HOOK_INVOCATION
+        builtin eval "$_askai_payload
+"
+        return $status
+    else if test $_askai_rc -eq {EXECUTED}
+        if string match -rq '^[0-9]{{1,3}}$' -- "$_askai_payload"; and test "$_askai_payload" -le 255
+            return $_askai_payload
+        end
         return 1
     end
-    command env ASKAI_SHELL=fish ASKAI_COMMAND_FILE="$_askai_file" {runner} $argv
-    set -l _askai_rc $status
-    if test $_askai_rc -eq 0; and test -s "$_askai_file"
-        source "$_askai_file"
-        set _askai_rc $status
-    end
-    command rm -f "$_askai_file"
     return $_askai_rc
 end
 '''
-        # fish does not implement POSIX parameter expansion.
-        script = script.replace('    set -l _askai_file (command mktemp "${TMPDIR:-/tmp}/askai.XXXXXXXXXX")',
-                                '    set -l _askai_tmp /tmp\n'
-                                '    if set -q TMPDIR; and test -n "$TMPDIR"\n'
-                                '        set _askai_tmp "$TMPDIR"\n    end\n'
-                                '    set -l _askai_file (command mktemp "$_askai_tmp/askai.XXXXXXXXXX")')
-        if hook:
-            script += _hook(shell, runner)
-        return script + (shortcuts(shell) if aliases else "")
-    script = f'''askai() {{
-    local _askai_file _askai_rc
+    else:
+        script = f'''askai() {{
+    local _askai_file _askai_rc _askai_payload
     _askai_file=$(command mktemp "${{TMPDIR:-/tmp}}/askai.XXXXXXXXXX") || return 1
-    if command env ASKAI_SHELL={shell} ASKAI_COMMAND_FILE="$_askai_file" {runner} "$@"; then
+    if command env ASKAI_SHELL={shell} ASKAI_WRAPPER_PROTOCOL={PROTOCOL} ASKAI_COMMAND_FILE="$_askai_file" {runner} {WRAPPER_FLAG} "$@"; then
         _askai_rc=0
-        if [ -s "$_askai_file" ]; then
-            . "$_askai_file"
-            _askai_rc=$?
-        fi
     else
         _askai_rc=$?
     fi
-    command rm -f "$_askai_file"
+    if [ "$_askai_rc" -eq {SELECTED} ] || [ "$_askai_rc" -eq {EXECUTED} ]; then
+        _askai_payload=$(command cat -- "$_askai_file") || _askai_rc=1
+    fi
+    command rm -f -- "$_askai_file"
+    unset _askai_file
+    if [ "$_askai_rc" -eq {SELECTED} ]; then
+        [ -n "$_askai_payload" ] || return 1
+        unset ASKAI_COMMAND_FILE ASKAI_WRAPPER_PROTOCOL ASKAI_HOOK_INVOCATION
+        builtin eval -- "$_askai_payload
+"
+        return $?
+    elif [ "$_askai_rc" -eq {EXECUTED} ]; then
+        case "$_askai_payload" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        [ "${{#_askai_payload}}" -le 3 ] && [ "$_askai_payload" -le 255 ] || return 1
+        return "$_askai_payload"
+    fi
     return "$_askai_rc"
 }}
 '''

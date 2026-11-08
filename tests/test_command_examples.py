@@ -63,5 +63,30 @@ class LineNumberExamples(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), [f"{i}\t{line}" for i, line in enumerate(lines, 1)])
 
 
+class FileCountExamples(unittest.TestCase):
+    @unittest.skipUnless(all(shutil.which(name) for name in ("find", "ls", "wc")), "required tools unavailable")
+    def test_ordinary_file_count_is_not_visible_entry_count(self):
+        # No embedded newlines in this fixture: this checks object selection,
+        # not whether newline-delimited output handles every possible filename.
+        with tempfile.TemporaryDirectory(prefix="askai-file-count-") as folder:
+            root = Path(folder)
+            for name in ("plain", "two words", ".hidden"):
+                (root / name).write_text("keep")
+            (root / "sub").mkdir()
+            (root / "empty").mkdir()
+            (root / "sub/nested").write_text("keep")
+            (root / "link").symlink_to("plain")
+            for shell in ("fish", "zsh", "bash"):
+                if not shutil.which(shell):
+                    continue
+                flags = {"fish": ["--no-config"], "zsh": ["-f"], "bash": ["--noprofile", "--norc"]}[shell]
+                for command, expected in (("find . -maxdepth 1 -type f | wc -l", 3), ("ls -1 | wc -l", 5)):
+                    with self.subTest(shell=shell, command=command):
+                        result = subprocess.run([shell, *flags, "-c", command], cwd=root,
+                                                capture_output=True, text=True, timeout=5)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(int(result.stdout.strip()), expected)
+
+
 if __name__ == "__main__":
     unittest.main()

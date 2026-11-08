@@ -5,6 +5,8 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+
+from .execution import child_env
 import tempfile
 
 from .core import AskError, clean_display, expand_path, validate_command, validate_python_encoding
@@ -36,10 +38,10 @@ def standalone_command(item: dict, shell: str) -> str:
     if not is_script(item):
         return item["command"]
     validate_python_encoding(item["code"])
-    command = "python3 -c " + " ".join(quote_argument(arg, shell)
+    command = "python3 -I -X utf8 -c " + " ".join(quote_argument(arg, shell)
                                         for arg in [item["code"], *item.get("args", [])])
     if len(command.encode("utf-8")) > MAX_INLINE_BYTES:
-        raise AskError("脚本过长，不适合复制为内联命令；请用 r编号复制源码，或 s编号保存脚本")
+        raise AskError("脚本过长，不适合复制为内联命令；请用 v编号复制源码，或 s编号保存脚本")
     return command
 
 
@@ -60,28 +62,20 @@ def validate_candidate(item: dict, shell: str) -> None:
     # No imports from cwd/user site and no execution of the proposed code.
     result = subprocess.run([python_executable(), "-I", "-S", "-c",
                              "import sys; compile(sys.stdin.read(), '<askai>', 'exec')"],
-                            input=item["code"], capture_output=True, text=True, timeout=10)
+                            input=item["code"], capture_output=True, text=True, encoding="utf-8", timeout=10, env=child_env())
     if result.returncode:
         raise AskError("Python 语法检查失败，没有执行:\n" + clean_display(result.stderr.strip()))
 
 
 def run_script(item: dict) -> int:
-    """Run from a temporary file, keeping stdin, cwd and local imports available."""
+    """Run from a temporary file, keeping stdin and cwd, with the same isolation as copied/saved commands."""
     validate_python_encoding(item["code"])
     executable = python_executable()
     with tempfile.TemporaryDirectory(prefix="askai-python-") as directory:
         path = Path(directory) / "script.py"
         path.write_text(item["code"], encoding="utf-8")
-        # Finish bootstrap and UTF-8 compilation before exposing cwd to the
-        # approved program. runpy lazily imports pkgutil from cwd otherwise.
-        runner = ("import sys,os,types\n"
-                  "path=sys.argv.pop(1); sys.argv[0]=path\n"
-                  "with open(path,encoding='utf-8') as source: program=compile(source.read(),path,'exec')\n"
-                  "main=types.ModuleType('__main__'); main.__file__=path; main.__cached__=None\n"
-                  "sys.modules['__main__']=main\n"
-                  "sys.path.insert(0,os.getcwd())\n"
-                  "exec(program,main.__dict__)\n")
-        return subprocess.call([executable, "-I", "-c", runner, str(path), *item.get("args", [])])
+        return subprocess.call([executable, "-I", "-X", "utf8", str(path), *item.get("args", [])], env=child_env())
+
 
 
 def save_script(item: dict, destination: str, shell: str) -> tuple[Path, str]:
@@ -101,4 +95,4 @@ def save_script(item: dict, destination: str, shell: str) -> tuple[Path, str]:
         path.unlink(missing_ok=True)
         raise
     argv = [str(path), *item.get("args", [])]
-    return path, "python3 " + " ".join(quote_argument(arg, shell) for arg in argv)
+    return path, "python3 -I -X utf8 " + " ".join(quote_argument(arg, shell) for arg in argv)

@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+
+from .execution import child_env
 import sys
 import time
 from urllib import error, request
@@ -124,7 +126,7 @@ def fetch(url: str, headers: dict[str, str], body_bytes: bytes, timeout: float,
     try:
         with subprocess.Popen(_worker_argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                              start_new_session=True) as process:
+                              start_new_session=True, env=child_env()) as process:
             try:
                 remaining = timeout - (time.monotonic() - started)
                 if remaining <= 0:

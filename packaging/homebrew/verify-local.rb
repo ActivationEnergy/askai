@@ -28,6 +28,16 @@ Dir.mktmpdir("askai-formula-") do |directory|
   prefix = temporary/"prefix"
   formula.define_singleton_method(:prefix) { |*_args| prefix }
   formula.define_singleton_method(:opt_prefix) { prefix }
+  formula.define_singleton_method(:logs) { temporary/"logs" }
+  # Redirect only downloads; production install verifies and extracts the wheels.
+  if ARGV.first
+    cache = Pathname(ARGV.first).expand_path
+    formula.resources.each do |r|
+      wheel = cache/File.basename(URI.parse(r.url).path)
+      raise "Missing wheel: #{wheel.basename}" unless wheel.file?
+      r.downloader.instance_variable_set(:@cached_location, wheel)
+    end
+  end
   Dir.chdir(source) { formula.install }
 
   testpath = temporary/"test"

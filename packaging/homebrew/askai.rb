@@ -4,18 +4,35 @@
 class Askai < Formula
   desc "Ask AI for shell commands, then choose what to run"
   homepage "https://github.com/ActivationEnergy/askai"
-  url "https://github.com/ActivationEnergy/askai.git", using: :git, tag: "v0.1.3"
-  version "0.1.3"
+  url "https://github.com/ActivationEnergy/askai.git", using: :git, tag: "v0.1.4"
+  version "0.1.4"
   license "MIT"
 
   depends_on "python@3.14"
 
+  resource "prompt-toolkit" do
+    url "https://files.pythonhosted.org/packages/84/03/0d3ce49e2505ae70cf43bc5bb3033955d2fc9f932163e84dc0779cc47f48/prompt_toolkit-3.0.52-py3-none-any.whl"
+    sha256 "9aac639a3bbd33284347de5ad8d68ecc044b91a762dc39b7c21095fcd6a19955"
+  end
+
+  resource "wcwidth" do
+    url "https://files.pythonhosted.org/packages/6f/0c/309b1813b230d1dbbd6f2c2ab2bb21ef68992358977605d9ef289bbfedcc/wcwidth-0.9.4-py3-none-any.whl"
+    sha256 "901eace6d2dd25ebb917d0ce5db18e5c537e1504c905cf32f0d006c12098b05d"
+  end
+
   def install
-    # No third-party runtime dependencies: keep modules private to this formula.
+    # Pure-Python wheels include package metadata; keep dependencies private.
+    resources.each do |r|
+      r.fetch unless r.downloaded?
+      r.verify_download_integrity(r.cached_download)
+      # Wheels are ZIP files, but Homebrew extension detection treats them as plain files.
+      system "#{formula_opt_bin("python@3.14")}/python3.14", "-I", "-m", "zipfile", "-e", r.cached_download.to_s, (libexec/"vendor").to_s
+    end
     libexec.install "src/askai_cli"
     (bin/"askai").write <<~PYTHON
       #!#{formula_opt_bin("python@3.14")}/python3.14 -I
       import sys
+      sys.path.insert(0, #{(opt_libexec/"vendor").to_s.inspect})
       sys.path.insert(0, #{opt_libexec.to_s.inspect})
       from askai_cli.cli import main
       main(launcher=(#{(opt_bin/"askai").to_s.inspect},))
@@ -40,6 +57,9 @@ class Askai < Formula
   end
 
   test do
+    dependency_check = "import sys; sys.path.insert(0, #{(opt_libexec/"vendor").to_s.inspect}); " \
+                       "import prompt_toolkit, wcwidth; print(prompt_toolkit.__version__)"
+    assert_match "3.0.52", shell_output("#{formula_opt_bin("python@3.14")}/python3.14 -I -c #{dependency_check.shellescape}")
     assert_match version.to_s, shell_output("#{bin}/askai --version")
     assert_match "askai-config", shell_output("#{bin}/askai-config --help")
     %w[askgpt askds askglm askkimi askmm askdsh askcc].each do |name|

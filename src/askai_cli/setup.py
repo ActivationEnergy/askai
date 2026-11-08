@@ -16,7 +16,7 @@ from .core import AskError, SHELLS, api_key_env_name, clean_display, expand_path
 from . import startup
 from . import core, preferences
 from .providers import available, list_api_models, model_id_allowed, providers
-from .registry import AUTO_ORDER, MENU_ORDER, PROVIDER_SPECS, ModelSpec, common_models, display_name
+from .registry import AUTO_ORDER, MENU_ORDER, PROVIDER_SPECS, ModelSpec, common_models, display_name, implicit_model_label
 from .terminal import Terminal, add_color_argument, argument_parser, configure, saved_mode
 
 
@@ -429,7 +429,7 @@ class Wizard:
             key = os.environ.get(api_key_env_name(provider), "")
             if key and key in str(value):
                 return "已隐藏疑似密钥，请重新选择模型"
-        return value or ("未配置" if provider.get("type") == "api" else "沿用 CLI 当前配置")
+        return value or implicit_model_label(provider)
 
     @staticmethod
     def backend_text(name, provider):
@@ -520,7 +520,7 @@ class Wizard:
             key = os.environ.get(api_key_env_name(provider), "") if api else ""
             choices = [item for item in common_models(name, provider) if model_id_allowed(item.id, key)]
             if not api:
-                choices.append(ModelSpec("", f"沿用 {display_name(name)} 当前模型（推荐）"))
+                choices.append(ModelSpec("", implicit_model_label(provider) if provider.get("type") == "claude" else f"沿用 {display_name(name)} 当前模型（推荐）"))
             current = provider.get("model") or ""
             if model_id_allowed(current, key) and all(item.id != current for item in choices):
                 choices.append(ModelSpec(current, f"当前配置：{current}"))
@@ -537,7 +537,7 @@ class Wizard:
             if api:
                 self.menu(f"{more} 更多型号（从服务商获取，需 API 密钥）")
             else:
-                self.say("更换原生模型可在该 CLI 自身设置中选择；askai 沿用其配置。")
+                self.say("Claude 使用隔离设置，不读取用户或项目设置文件；可在高级设置中指定型号。" if provider.get("type") == "claude" else "更换原生模型可在该 CLI 自身设置中选择；askai 沿用其配置。")
             self.menu(f"{advanced} 高级设置\n0 返回 AI 模型与后端列表")
             answer = self.ask()
             if answer in ("", "0"):
@@ -688,6 +688,8 @@ class Wizard:
 
 
 def main(argv=None, reader=None, writer=None) -> int:
+    from .terminal import configure_stdio
+    configure_stdio()
     configure()
     parser = argument_parser(prog="askai-config", description="管理 Shell 集成、AI 模型和默认后端；不会调用 AI 或修改模型密钥。")
     add_color_argument(parser)

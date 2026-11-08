@@ -131,7 +131,7 @@ class ColorCliTests(unittest.TestCase):
     def test_always_never_and_machine_modes(self):
         result = self.invoke("--color", "always", "question")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("\x1b[1;36m", result.stdout)
+        self.assertIn("\x1b[1;32m", result.stdout)
         result = self.invoke("--color", "never", "question")
         self.assertNotIn("\x1b", result.stdout + result.stderr)
         for mode in ("--print", "--json"):
@@ -186,7 +186,7 @@ class ColorCliTests(unittest.TestCase):
             self.assertEqual(code, 0, text)
             self.assertIn("\x1b", text)
             if action.startswith("p"):
-                payload = text.split("p1\r\n", 1)[1]
+                payload = text
                 self.assertIn("未复制到剪贴板", payload)
                 self.assertEqual(payload.splitlines()[-1], "printf 'hello\\n'")
                 self.assertNotIn("\x1b", payload.splitlines()[-1])
@@ -229,7 +229,7 @@ class ColorCliTests(unittest.TestCase):
         self.env.update(ASKAI_COMMAND_FILE=str(selected), ASKAI_SHELL="fish",
                         ASKAI_TEST_ANSWER=json.dumps(response("printf 'color-free'")))
         code, output = pty_terminal([str(ASKAI), "--color=always", "question"], self.env, ("1\n",))
-        self.assertEqual(code, 0, output)
+        self.assertEqual(code, 80, output)
         self.assertNotIn("\x1b", selected.read_text())
         self.assertEqual(selected.read_text(), "printf 'color-free'\n")
 

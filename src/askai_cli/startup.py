@@ -9,6 +9,8 @@ import re
 import shutil
 import stat
 import subprocess
+
+from .execution import child_env
 import tempfile
 
 from .core import AskError, SHELLS, clean_display, xdg_directory
@@ -119,13 +121,13 @@ def locate(text: str) -> tuple[int, int, dict] | None:
 
 def decode(raw: bytes) -> tuple[str, str]:
     if raw.startswith(b"\xef\xbb\xbf"):
-        raise AskError("启动文件含 BOM，首版不自动转换")
+        raise AskError("配置文件含 BOM，首版不自动转换")
     try:
         text = raw.decode("utf-8")
     except UnicodeError as exc:
-        raise AskError("启动文件不是 UTF-8，未修改") from exc
+        raise AskError("配置文件不是 UTF-8，未修改") from exc
     if "\r" in text.replace("\r\n", "") or ("\r\n" in text and "\n" in text.replace("\r\n", "")):
-        raise AskError("启动文件换行格式混合，未自动转换")
+        raise AskError("配置文件换行格式混合，未自动转换")
     return text, "\r\n" if "\r\n" in text else "\n"
 
 
@@ -134,34 +136,34 @@ def inspect_metadata(path: Path):
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
         raise AskError(f"仅支持本人拥有、没有硬链接的普通文件: {path}")
     if not info.st_mode & stat.S_IWUSR or not os.access(path, os.W_OK):
-        raise AskError(f"启动文件不可写: {path}")
+        raise AskError(f"配置文件不可写: {path}")
     if info.st_mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX) or getattr(info, "st_flags", 0):
-        raise AskError(f"启动文件带特殊权限或文件标志，未修改: {path}")
+        raise AskError(f"配置文件带特殊权限或文件标志，未修改: {path}")
     # Conservatively reject metadata which an atomic replacement would lose.
     provenance = None
     if sys_platform() == "darwin":
-        attributes = subprocess.run(["/usr/bin/xattr", str(path)], capture_output=True, text=True, timeout=10)
+        attributes = subprocess.run(["/usr/bin/xattr", str(path)], capture_output=True, text=True, encoding="utf-8", timeout=10, env=child_env())
         names = set(attributes.stdout.splitlines())
         if attributes.returncode or names - {"com.apple.provenance"}:
-            raise AskError(f"无法安全保留启动文件扩展属性: {path}")
+            raise AskError(f"无法安全保留配置文件扩展属性: {path}")
         if names:
             provenance = mac_provenance(path)
-        result = subprocess.run(["/bin/ls", "-lde", str(path)], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(["/bin/ls", "-lde", str(path)], capture_output=True, text=True, encoding="utf-8", timeout=10, env=child_env())
         if result.returncode or any(re.match(r"\s*\d+: ", line) for line in result.stdout.splitlines()[1:]):
-            raise AskError(f"无法安全保留启动文件 ACL: {path}")
+            raise AskError(f"无法安全保留配置文件 ACL: {path}")
     elif hasattr(os, "listxattr"):
         if os.listxattr(path):
-            raise AskError(f"启动文件含扩展属性/访问控制，首版不自动替换: {path}")
+            raise AskError(f"配置文件含扩展属性/访问控制，首版不自动替换: {path}")
     else:
-        raise AskError("此平台无法可靠检查文件元数据，首版不自动修改启动文件")
+        raise AskError("此平台无法可靠检查文件元数据，当前版本不自动修改配置文件")
     return info, provenance
 
 
 def mac_provenance(path: Path) -> str:
     result = subprocess.run(["/usr/bin/xattr", "-px", "com.apple.provenance", str(path)],
-                            capture_output=True, text=True, timeout=10)
+                            capture_output=True, text=True, encoding="utf-8", timeout=10, env=child_env())
     if result.returncode:
-        raise AskError(f"无法验证启动文件系统属性: {path}")
+        raise AskError(f"无法验证配置文件系统属性: {path}")
     return "".join(result.stdout.split())
 
 
@@ -195,10 +197,10 @@ def identity(info) -> tuple:
 def check_syntax(text: str, executable: str) -> None:
     name = Path(executable).name
     flags = ["--no-config", "-n"] if name == "fish" else ["-f", "-n"] if name == "zsh" else ["--noprofile", "--norc", "-n"] if name == "bash" else ["-n"]
-    env = dict(os.environ)
+    env = child_env()
     env.pop("BASH_ENV", None)
     env.pop("ENV", None)
-    result = subprocess.run([executable, *flags], input=text, text=True, capture_output=True, env=env, timeout=10)
+    result = subprocess.run([executable, *flags], input=text, text=True, encoding="utf-8", capture_output=True, env=env, timeout=10)
     if result.returncode:
         raise AskError("拟写入文件未通过无执行语法检查，未修改:\n" + clean_display(result.stderr.strip()))
 
@@ -215,7 +217,7 @@ def interpreter(shell: str, value: str | None = None) -> str:
 
 def bash_hook_supported(executable: str) -> bool:
     result = subprocess.run([executable, "--noprofile", "--norc", "-c", 'printf "%s" "${BASH_VERSINFO[0]}"'],
-                            capture_output=True, text=True, timeout=10)
+                            capture_output=True, text=True, encoding="utf-8", timeout=10, env=child_env())
     return result.returncode == 0 and result.stdout.strip().isdigit() and int(result.stdout.strip()) >= 4
 
 

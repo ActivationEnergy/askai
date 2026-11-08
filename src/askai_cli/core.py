@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+
+from .execution import child_env
 import tomllib
 import tokenize
 import unicodedata
@@ -144,7 +146,7 @@ def parse_answer(raw: str) -> dict:
         raise AskError("模型的最终响应不是文本，没有命令被执行")
     if len(raw) > MAX_RESPONSE_BYTES or len(raw.encode("utf-8", errors="replace")) > MAX_RESPONSE_BYTES:
         raise AskError("模型响应超过 8 MiB 上限，未采纳任何候选命令")
-    raw = raw.strip()
+    raw = raw.strip().removeprefix("\ufeff").lstrip()
     if raw.startswith("```"):
         match = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n```", raw, re.S)
         if not match:
@@ -204,15 +206,18 @@ def parse_answer(raw: str) -> dict:
 
 def validate_command(command: str, shell: str) -> None:
     """Parse with the target shell without executing the proposed command."""
+    tail = command.rstrip("\n")
+    if (len(tail) - len(tail.rstrip("\\"))) % 2:
+        raise AskError("命令以未完成的续行结束，未执行；请重新生成完整命令")
     executable = shutil.which(shell)
     if not executable:
         raise AskError(f"找不到 {shell}，无法检查或执行命令")
     options = {"fish": ["--no-config", "-n"], "zsh": ["-f", "-n"],
                "bash": ["--noprofile", "--norc", "-n"]}[shell]
-    env = dict(os.environ)
+    env = child_env()
     env.pop("BASH_ENV", None)
     env.pop("ENV", None)
     result = subprocess.run([executable, *options], input=command + "\n",
-                            capture_output=True, text=True, env=env, timeout=10)
+                            capture_output=True, text=True, encoding="utf-8", env=env, timeout=10)
     if result.returncode:
         raise AskError(f"{shell} 语法检查失败，没有执行:\n{clean_display(result.stderr.strip())}")

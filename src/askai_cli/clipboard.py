@@ -5,6 +5,8 @@ import platform
 import shutil
 import subprocess
 
+from .execution import child_env
+
 from .core import AskError, clean_display
 
 
@@ -22,11 +24,13 @@ def copy_command(command: str) -> None:
                            ("xsel", "--clipboard", "--input")])
         if not os.environ.get("WAYLAND_DISPLAY"):
             candidates.append(("wl-copy",))
+    env = child_env()
+    env["LC_ALL"] = "en_US.UTF-8" if platform.system() == "Darwin" else "C.UTF-8"
     for name, *args in candidates:
         executable = shutil.which(name)
         if executable:
             result = subprocess.run([executable, *args], input=command,
-                                    capture_output=True, text=True, timeout=10)
+                                    capture_output=True, text=True, encoding="utf-8", timeout=10, env=env)
             if result.returncode:
                 raise AskError("复制到剪贴板失败: " + clean_display(result.stderr.strip() or name))
             return

@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import sys
+import time
 
 from .core import clean_display
 from .terminal import Terminal
@@ -51,7 +52,14 @@ class DebugTrace:
         values = list(secrets)
         values.extend(value for key, value in os.environ.items()
                       if re.search(r"(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$", key, re.I))
-        secrets = {value for value in values if isinstance(value, str) and value}
+        self.secrets = []
+        self._raw_secrets = set()
+        self.add_secrets(values)
+
+    def add_secrets(self, values):
+        """Retain earlier secrets and add the explicitly selected provider's key."""
+        self._raw_secrets.update(value for value in values if isinstance(value, str) and value)
+        secrets = set(self._raw_secrets)
         secrets.update(json.dumps(value, ensure_ascii=True)[1:-1] for value in tuple(secrets))
         secrets.update(json.dumps(value, ensure_ascii=False)[1:-1] for value in tuple(secrets))
         self.secrets = sorted(secrets, key=len, reverse=True)
@@ -177,3 +185,35 @@ class DebugTrace:
                 ui.line("[askai debug] " + title, "title")
             ui.line(text)
             sys.stderr.flush()
+
+
+class CliTiming:
+    """Record observable pipe events without inferring server-side durations."""
+
+    def __init__(self):
+        self.started = time.perf_counter()
+        self.events = {}
+        self.stderr_tail = b""
+
+    def mark(self, name):
+        self.events.setdefault(name, time.perf_counter() - self.started)
+
+    def received(self, stream, chunk):
+        self.mark("首次标准输出" if stream == "stdout" else "首次诊断输出")
+        if stream == "stdout":
+            self.events["最后标准输出"] = time.perf_counter() - self.started
+        else:
+            text = self.stderr_tail + chunk
+            if b"dsh: reasoning:" in text:
+                self.mark("观察到 DSH 推理输出")
+            if re.search(rb"\[llm-deepseek-(?:api-key|account)\] model listing[^\r\n]*(?: loaded | failed )", text):
+                self.mark("观察到 DSH 模型目录结果")
+            self.stderr_tail = text[-512:]
+
+    def report(self, trace):
+        self.mark("调用结束（含退出或中断清理）")
+        trace.emit("CLI 阶段计时", {
+            "计时方式": "以下均为距本次 CLI 启动前的累计秒数，不可相加；管道读取时间不是服务端事件时间。",
+            **{name: f"{seconds:.3f} 秒" for name, seconds in sorted(self.events.items(), key=lambda item: item[1])},
+            "观测边界": "目录结果不等于目录请求耗时；推理输出不代表推理开始。网络、排队、推理和生成不能由这些时间单独拆分。未出现的事件表示未观察到。",
+        })

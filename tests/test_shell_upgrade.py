@@ -30,7 +30,9 @@ class ShellUpgradeTests(unittest.TestCase):
             bootstrap = ("import sys;sys.path.insert(0," + repr(str(old / "libexec")) + ");"
                          "from askai_cli.shells import integration;print(integration('fish',aliases=True))")
             legacy = root / "legacy.fish"
-            legacy.write_text(subprocess.check_output([sys.executable, "-I", "-c", bootstrap], text=True))
+            # Do not let another installed askai mask the missing legacy keg.
+            legacy.write_text(subprocess.check_output([sys.executable, "-I", "-c", bootstrap], text=True)
+                              .replace(" -I -c ", " -I -S -c "))
             (new / "bin").mkdir()
             entry = new / "bin/askai"
             entry.write_text(f"#!{sys.executable}\nimport sys\nsys.path.insert(0,{str(opt / 'libexec')!r})\n"

@@ -66,7 +66,7 @@ class ReviewBoundaries(unittest.TestCase):
         config.write_text('provider="fixture"\n[providers.fixture]\ntype="command"\nexecutable=' + json.dumps(sys.executable) + '\nargs=["-I","-c","import sys;sys.stdout.buffer.write(bytes([255]))"]\n')
         selected = self.root / "selected"
         selected.write_text("stale command")
-        env = {**os.environ, "ASKAI_CONFIG": str(config), "ASKAI_PROVIDER": "fixture", "ASKAI_NO_SETUP": "1", "ASKAI_COMMAND_FILE": str(selected)}
+        env = {**os.environ, "ASKAI_CONFIG": str(config), "ASKAI_PROVIDER": "fixture", "ASKAI_NO_SETUP": "1", "ASKAI_COMMAND_FILE": str(selected), "ASKAI_WRAPPER_PROTOCOL": "2"}
         result = subprocess.run([str(fixtures.ASKAI), "--print", "fixture question"], env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")

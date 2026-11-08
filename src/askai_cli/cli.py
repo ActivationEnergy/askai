@@ -11,13 +11,15 @@ import time
 
 from . import __version__
 from .clipboard import copy_command
+from .execution import CommandExchange, WRAPPER_FLAG, child_env
+from .registry import implicit_model_label
 from .core import (AskError, SHELLS, api_key_env_name, clean_display, config_path, instructions,
                    load_config, menu_index, parse_answer, shell_name, validate_command)
 from .providers import answer, available, providers, select_provider
 from .debug import DebugTrace
 from .shells import SHORTCUTS, integration
 from .scripts import is_script, preview, run_script, save_script, standalone_command, validate_candidate
-from .terminal import Terminal, add_color_argument, argument_parser, configure
+from .terminal import Terminal, add_color_argument, argument_parser, configure, configure_stdio
 
 
 def parser() -> argparse.ArgumentParser:
@@ -95,31 +97,54 @@ def management(argv: list[str], *, launcher: tuple[str, ...] | None = None) -> i
     return 0
 
 
-def choose(data: dict, reader, writer, shell: str = "bash") -> tuple[str, int | None]:
+def display_command(ui, item):
+    if is_script(item):
+        # Metadata belongs outside the copyable source block.
+        ui.line(preview(item).removesuffix(item["code"]).rstrip("\n"))
+        ui.command(item["code"])
+    else:
+        ui.command(item["command"])
+
+
+def choose(data: dict, reader, writer, shell: str = "bash", *, options=None) -> tuple[str, int | None]:
     ui = Terminal(writer)
     ui.line(data["explanation"])
     for index, item in enumerate(data["commands"], 1):
-        ui.line(f"\n[{index}] {item['label']}", "title")
-        ui.line(preview(item))
+        ui.line(f"\n[{index}] {item['label']}", "command_title")
+        display_command(ui, item)
         if item.get("explanation"):
             ui.line("原理: " + item["explanation"])
         if item["warning"]:
             ui.notice("注意", item["warning"])
     if not data["commands"]:
         return "cancel", None
+    from .interaction import clear_pending_input, read_choice, supports_keys
+    options = options or {}
     has_scripts = any(is_script(item) for item in data["commands"])
+    single_keys = supports_keys(reader, writer) and len(data["commands"]) <= 9
     while True:
         ui.line()
-        ui.line("执行：编号  解释：e编号")
-        ui.line("仅打印到终端：p编号（如 p1）  复制到剪贴板：c编号（如 c1）")
+        number = "1" if len(data["commands"]) == 1 else f"1-{len(data['commands'])}"
+        primary = [(number, "立即执行" if single_keys else "执行"),
+                   ("e" if single_keys else "e编号", "解释"),
+                   ("p" if single_keys else "p编号", "打印"),
+                   ("c" if single_keys else "c编号", "复制")]
         if has_scripts:
-            ui.line("复制脚本源码：r编号  保存脚本：s编号")
-        ui.prompt("q取消 [默认 q]: ")
-        line = reader.readline()
+            primary += [("v" if single_keys else "v编号", "复制源码"),
+                        ("s" if single_keys else "s编号", "保存脚本")]
+        ui.action_bar([primary, [*options.items(), ("q", "退出")]])
+        if single_keys:
+            line = read_choice(reader, writer, len(data["commands"]), has_scripts, extra=options)
+        else:
+            clear_pending_input(reader)
+            ui.prompt("q取消 [默认 q]: ")
+            line = reader.readline()
         value = line.strip().lower()
         if not line or value in ("", "q", "quit"):
             return "cancel", None
-        action = {"e": "explain", "p": "print", "c": "copy", "r": "source", "s": "save"}.get(value[:1], "run")
+        if value in options:
+            return value, None
+        action = {"v": "source", "e": "explain", "p": "print", "c": "copy", "r": "source", "s": "save"}.get(value[:1], "run")
         number = value[1:] if action != "run" else value
         index = menu_index(number, len(data["commands"]))
         if index is not None:
@@ -143,17 +168,20 @@ def choose(data: dict, reader, writer, shell: str = "bash") -> tuple[str, int | 
                     ui.notice("无法打印或复制", str(exc), "error")
                     continue
             return action, index
-        ui.line("请输入列表中的编号、e编号、p编号、c编号、r编号、s编号或 q。")
+        ui.line("请输入列表中的编号、e编号、p编号、c编号、v编号、s编号或菜单快捷键。")
 
 
-def select_action(data: dict, reader, writer, shell: str) -> tuple[str, int | None, str | None]:
-    action, index = choose(data, reader, writer, shell)
+def select_action(data: dict, reader, writer, shell: str, *, options=None) -> tuple[str, int | None, str | None]:
+    action, index = choose(data, reader, writer, shell, options=options)
     destination = None
     if action == "save":
-        Terminal(writer).prompt("保存路径（无需引号，回车取消）: ")
-        destination = reader.readline().strip()
+        from .interaction import read_text
+        try:
+            destination = read_text("保存路径（无需引号，回车取消）: ", reader, writer)
+        except KeyboardInterrupt:
+            return "retry-menu", None, None
         if not destination:
-            return "cancel", None, None
+            return "retry-menu", None, None
     return action, index, destination
 
 
@@ -166,7 +194,10 @@ def request_suggestions(provider, model, system, prompt, timeout, trace, diagnos
     started = time.monotonic()
     raw = answer(provider, model, system, prompt, timeout, trace=trace)
     try:
-        return parse_answer(raw)
+        parse_started = time.perf_counter()
+        parsed = parse_answer(raw)
+        trace.emit("回答解析计时", {"尝试": 1, "解析校验": f"{time.perf_counter() - parse_started:.3f} 秒"})
+        return parsed
     except AskError as first_error:
         remaining = timeout - (time.monotonic() - started)
         if not isinstance(raw, str) or len(raw.encode("utf-8", errors="replace")) > 64 * 1024 or remaining <= 0:
@@ -182,13 +213,22 @@ def request_suggestions(provider, model, system, prompt, timeout, trace, diagnos
         }, ensure_ascii=True)
         repaired = answer(provider, model, system, correction, remaining, trace=trace)
         try:
-            return parse_answer(repaired)
+            parse_started = time.perf_counter()
+            parsed = parse_answer(repaired)
+            trace.emit("回答解析计时", {"尝试": 2, "解析校验": f"{time.perf_counter() - parse_started:.3f} 秒"})
+            return parsed
         except AskError as second_error:
             trace.emit("answer validation failure", {"validation_error": str(second_error)})
             raise AskError(f"模型回答修正后仍不符合格式要求：{second_error}；未执行任何命令。可加 --debug 查看原始回答。") from second_error
 
 
 def run(argv: list[str] | None = None, *, launcher: tuple[str, ...] | None = None) -> int:
+    with CommandExchange() as exchange:
+        return exchange.finish(_run(argv, launcher=launcher, exchange=exchange))
+
+
+def _run(argv, *, launcher, exchange) -> int:
+    invocation_started = time.perf_counter()
     argv = list(sys.argv[1:] if argv is None else argv)
     # Private hook probe: no configuration, model request or terminal output.
     if argv[:1] == ["__askai_han_probe"]:
@@ -214,9 +254,7 @@ def run(argv: list[str] | None = None, *, launcher: tuple[str, ...] | None = Non
         return 0
     shell = shell_name(args.shell or os.environ.get("ASKAI_SHELL"))
     # Never reuse a command from a prior invocation, even on provider failure.
-    command_file = os.environ.get("ASKAI_COMMAND_FILE")
-    if command_file:
-        Path(command_file).write_text("", encoding="utf-8")
+    command_file = exchange.path
     config = load_config()
     configure(config, args.color)
     ui, diagnostic = Terminal(sys.stdout), Terminal(sys.stderr)
@@ -224,13 +262,13 @@ def run(argv: list[str] | None = None, *, launcher: tuple[str, ...] | None = Non
         from .setup import maybe_hint
         maybe_hint()
     timeout = args.timeout if args.timeout is not None else config.get("timeout", 120)
-    if not isinstance(timeout, (int, float)) or not 0 < timeout <= 3600:
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 3600:
         raise AskError("timeout 必须为 0 到 3600 之间的秒数")
     name, provider = select_provider(config, args.provider)
     model = args.model or os.environ.get("ASKAI_MODEL")
     trace = DebugTrace(args.debug, secrets=[os.environ.get(api_key_env_name(provider), "")])
     trace.emit("backend", {"name": name, "type": provider.get("type"),
-                          "requested_model": model or provider.get("model") or "由 CLI 自身配置决定；实际模型未确认",
+                          "requested_model": model or provider.get("model") or implicit_model_label(provider),
                           "timeout_seconds": timeout, "shell": shell,
                           "web_search": provider.get("web_search"),
                           "config_file": str(config_path())})
@@ -241,7 +279,13 @@ def run(argv: list[str] | None = None, *, launcher: tuple[str, ...] | None = Non
     if interactive:
         diagnostic.line(f"正在询问 {name}…", "title")
         sys.stderr.flush()
-    data = request_suggestions(provider, model, instructions(shell), prompt, timeout, trace, diagnostic)
+    system = instructions(shell)
+    prepared = time.perf_counter()
+    trace.emit("本地准备计时", {"入口到请求准备完成": f"{prepared - invocation_started:.3f} 秒",
+                                  "范围": "从 Python 主流程开始计时，不含 Shell 和 Python 导入耗时。"})
+    data = request_suggestions(provider, model, system, prompt, timeout, trace, diagnostic)
+    trace.emit("回答就绪计时", {"入口到回答解析完成": f"{time.perf_counter() - invocation_started:.3f} 秒",
+                                  "范围": "包含调用及可能的一次格式修正，不含菜单选择和命令执行；debug 输出自身也会产生开销。"})
     if args.json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
         return 0 if data["commands"] else 2
@@ -264,15 +308,72 @@ def run(argv: list[str] | None = None, *, launcher: tuple[str, ...] | None = Non
         # A redirected/piped answer never creates an executable selection file.
         ui.line(data["explanation"])
         for i, item in enumerate(data["commands"], 1):
-            ui.line(f"\n[{i}] {item['label']}", "title")
-            ui.line(preview(item))
+            ui.line(f"\n[{i}] {item['label']}", "command_title")
+            display_command(ui, item)
             if item.get("explanation"):
                 ui.line("原理: " + item["explanation"])
             if item["warning"]:
                 ui.notice("注意", item["warning"])
         return 0
+    from .retry import review_answers
+
+    def perform_choice(data, action, index, destination):
+        if action == "cancel":
+            return 0
+        item = data["commands"][index]
+        validate_candidate(item, shell)
+        if action == "source":
+            copy_command(item["code"])
+            diagnostic.notice("已复制", f"第 {index + 1} 个脚本的源码已放入剪贴板。", "success")
+            return 0
+        if action == "save":
+            path, command = save_script(item, destination, shell)
+            ui.notice("已保存脚本", str(path), "success")
+            ui.line("运行命令:")
+            print(command)
+            return 0
+        if action == "run" and is_script(item):
+            diagnostic.line("使用 python3 执行脚本；当前工作目录保持不变，临时文件在结束后清理。")
+            status = run_script(item)
+            exchange.executed = True
+            return status
+        command = standalone_command(item, shell)
+        if is_script(item):
+            validate_command(command, shell)
+        if action == "print":
+            diagnostic.line(f"已选择仅打印第 {index + 1} 条命令，未复制到剪贴板；需要复制时请在选择菜单输入 c{index + 1}。")
+            print(command)
+            return 0
+        if action == "copy":
+            copy_command(command)
+            diagnostic.notice("已复制", f"第 {index + 1} 条命令已放入剪贴板。", "success")
+            return 0
+        if command_file:
+            if os.environ.get("ASKAI_SHELL") != shell:
+                raise AskError("目标 shell 与当前集成不同；请使用 --print 输出后在目标 shell 运行")
+            return exchange.select(command)
+        diagnostic.line(f"将在 {shell} 子进程执行；要让 cd/环境变量保留，请加载 askai init {shell}。")
+        status = subprocess.call([shell, "-c", command + "\n"], env=child_env())
+        exchange.executed = True
+        return status
+
+
+    def request_again(next_state):
+        trace.add_secrets([os.environ.get(api_key_env_name(next_state.provider), "")])
+        next_prompt = json.loads(prompt)
+        next_prompt["question"] = next_state.question
+        trace.emit("本次重新回答", {"后端": next_state.name, "模型": next_state.model or next_state.provider.get("model") or implicit_model_label(next_state.provider),
+                                  "推理强度（请求值）": next_state.provider.get("reasoning_effort", "沿用后端设置")})
+        diagnostic.line(f"正在询问 {next_state.name}…", "title")
+        return request_suggestions(next_state.provider, next_state.model, system,
+                                   json.dumps(next_prompt, ensure_ascii=False), timeout, trace, diagnostic)
+
+    def review(reader):
+        return review_answers(data, name, provider, model, question, config, reader, sys.stdout,
+                              shell, request_again, select_action, perform=perform_choice)
+
     if sys.stdin.isatty():
-        action, index, destination = select_action(data, sys.stdin, sys.stdout, shell)
+        return review(sys.stdin)
     else:
         # A shell handler may redirect stdin; read the controlling terminal then.
         try:
@@ -281,51 +382,23 @@ def run(argv: list[str] | None = None, *, launcher: tuple[str, ...] | None = Non
             print(json.dumps(data, ensure_ascii=False, indent=2))
             return 0
         with tty:
-            action, index, destination = select_action(data, tty, sys.stdout, shell)
-    if action == "cancel":
-        return 0
-    item = data["commands"][index]
-    validate_candidate(item, shell)
-    if action == "source":
-        copy_command(item["code"])
-        diagnostic.notice("已复制", f"第 {index + 1} 个脚本的源码已放入剪贴板。", "success")
-        return 0
-    if action == "save":
-        path, command = save_script(item, destination, shell)
-        ui.notice("已保存脚本", str(path), "success")
-        ui.line("运行命令:")
-        print(command)
-        return 0
-    if action == "run" and is_script(item):
-        diagnostic.line("使用 python3 执行脚本；当前工作目录保持不变，临时文件在结束后清理。")
-        return run_script(item)
-    command = standalone_command(item, shell)
-    if is_script(item):
-        validate_command(command, shell)
-    if action == "print":
-        diagnostic.line(f"已选择仅打印第 {index + 1} 条命令，未复制到剪贴板；需要复制时请在选择菜单输入 c{index + 1}。")
-        print(command)
-        return 0
-    if action == "copy":
-        copy_command(command)
-        diagnostic.notice("已复制", f"第 {index + 1} 条命令已放入剪贴板。", "success")
-        return 0
-    if command_file:
-        if os.environ.get("ASKAI_SHELL") != shell:
-            raise AskError("目标 shell 与当前集成不同；请使用 --print 输出后在目标 shell 运行")
-        Path(command_file).write_text(command + "\n", encoding="utf-8")
-        return 0
-    diagnostic.line(f"将在 {shell} 子进程执行；要让 cd/环境变量保留，请加载 askai init {shell}。")
-    return subprocess.call([shell, "-c", command])
+            return review(tty)
 
 
 def main(*, launcher: tuple[str, ...] | None = None) -> None:
+    # Re-decode OS arguments under UTF-8 where the filesystem codec follows a
+    # legacy locale. Re-execution preserves the original entry and isolation flags.
+    if sys.getfilesystemencoding().lower().replace("-", "") != "utf8":
+        os.execv(sys.executable, [sys.executable, "-X", "utf8", *sys.orig_argv[1:]])
+    configure_stdio()
     configure()
     try:
         if Path(sys.argv[0]).name == "askai-config":
             from .setup import main as setup_main
             raise SystemExit(setup_main())
         argv = sys.argv[1:]
+        if argv[:1] == [WRAPPER_FLAG]:
+            argv = argv[1:]
         provider = SHORTCUTS.get(Path(sys.argv[0]).name)
         if provider:
             argv = ["--provider", provider, *argv]
@@ -338,6 +411,8 @@ def main(*, launcher: tuple[str, ...] | None = None) -> None:
         code = 130
     except BrokenPipeError:
         code = 0
+    except UnicodeError:
+        Terminal(sys.stderr).notice("askai", "输入或输出不是有效 UTF-8，已停止。", "error")
     except (OSError, subprocess.SubprocessError) as exc:
         Terminal(sys.stderr).notice("askai", str(exc), "error")
         code = 1

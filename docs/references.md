@@ -25,4 +25,4 @@
 | MiniMax | `MiniMax-M3.1-Flash` | `MiniMax-M3` |
 | GLM | `glm-5.3` | `glm-5.3-flash`、`glm-5.3-flashx` |
 
-Kimi 官方已将 `kimi-k2.5` 标记为下线，因此不再将其作为预设或新配置默认值。已经保存的型号不会自动替换；请在设置中自行选择新型号。CLI 连接继续沿用原生配置，不在 askai 中维护其型号清单。
+Kimi 官方已将 `kimi-k2.5` 标记为下线，因此不再将其作为预设或新配置默认值。已经保存的型号不会自动替换；请在设置中自行选择新型号。Codex/DSH 连接沿用原生配置；Claude 使用隔离设置，不加载 user/project/local 设置文件。未指定 Claude 型号时仍可能受其环境变量影响，未验证实际型号。askai 不维护 CLI 原生型号清单。

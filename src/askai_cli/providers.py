@@ -8,13 +8,15 @@ import shutil
 import selectors
 import signal
 import subprocess
+
+from .execution import child_env
 import tempfile
 import time
 from urllib import request
 from urllib.parse import urlparse
 
 from .core import AskError, MAX_RESPONSE_BYTES, api_key_env_name, clean_display
-from .debug import DebugTrace
+from .debug import CliTiming, DebugTrace
 from .http_transport import fetch
 from .dsh_policy import dsh_patch
 from .registry import AUTO_ORDER, DEFAULTS
@@ -43,7 +45,7 @@ def available(provider: dict) -> bool:
         key_env = api_key_env_name(provider)
         return bool(key_env) and bool(os.environ.get(key_env))
     executable = provider.get("executable", "")
-    return isinstance(executable, str) and bool(executable) and bool(shutil.which(executable))
+    return isinstance(executable, str) and bool(executable) and "\x00" not in executable and bool(shutil.which(executable))
 
 
 def select_provider(config: dict, chosen: str | None) -> tuple[str, dict]:
@@ -73,7 +75,7 @@ def _signal_cli_group(process, sig) -> None:
         pass
 
 
-def _communicate_bounded(process, payload: bytes, timeout: float) -> tuple[bytes, bytes]:
+def _communicate_bounded(process, payload: bytes, timeout: float, timing=None) -> tuple[bytes, bytes]:
     """Drain both pipes while writing stdin, with a deadline and per-stream cap."""
     deadline = time.monotonic() + timeout
     buffers = {"stdout": bytearray(), "stderr": bytearray()}
@@ -87,6 +89,8 @@ def _communicate_bounded(process, payload: bytes, timeout: float) -> tuple[bytes
             selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
         else:
             process.stdin.close()
+            if timing:
+                timing.mark("请求输入已关闭")
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -101,6 +105,8 @@ def _communicate_bounded(process, payload: bytes, timeout: float) -> tuple[bytes
                     if not pending:
                         selector.unregister(stream)
                         stream.close()
+                        if timing:
+                            timing.mark("请求输入已关闭")
                 else:
                     chunk = os.read(stream.fileno(), 65536)
                     if not chunk:
@@ -109,12 +115,16 @@ def _communicate_bounded(process, payload: bytes, timeout: float) -> tuple[bytes
                     if len(buffers[name]) + len(chunk) > MAX_RESPONSE_BYTES:
                         raise AskError(f"模型 CLI {name} 超过 8 MiB 上限，已停止；未采纳任何候选命令")
                     buffers[name].extend(chunk)
+                    if timing:
+                        timing.received(name, chunk)
         process.wait(timeout=max(0, deadline - time.monotonic()))
     return bytes(buffers["stdout"]), bytes(buffers["stderr"])
 
 
 def run_cli(argv: list[str], payload: str, timeout: float, trace: DebugTrace | None = None) -> str:
     """Bound provider lifetime, including descendants, on timeout or cancellation."""
+    if any(not isinstance(arg, str) or "\x00" in arg for arg in argv):
+        raise AskError("模型 CLI 参数无效，未启动程序")
     try:
         encoded = payload.encode("utf-8")
     except UnicodeEncodeError as exc:
@@ -122,10 +132,15 @@ def run_cli(argv: list[str], payload: str, timeout: float, trace: DebugTrace | N
     if trace:
         trace.emit("CLI invocation", {"argv": argv, "stdin": payload})
     started = time.monotonic()
+    timing = CliTiming() if trace and trace.enabled else None
     with subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, start_new_session=True) as process:
+                          stderr=subprocess.PIPE, start_new_session=True, env=child_env()) as process:
         try:
-            stdout, stderr = _communicate_bounded(process, encoded, timeout)
+            if timing:
+                timing.mark("子进程已创建")
+                stdout, stderr = _communicate_bounded(process, encoded, timeout, timing=timing)
+            else:
+                stdout, stderr = _communicate_bounded(process, encoded, timeout)
         except (subprocess.TimeoutExpired, KeyboardInterrupt, AskError, OSError) as exc:
             _signal_cli_group(process, signal.SIGTERM)
             # Close the pipes instead of buffering more output during cleanup.
@@ -146,6 +161,9 @@ def run_cli(argv: list[str], payload: str, timeout: float, trace: DebugTrace | N
             if isinstance(exc, OSError):
                 raise AskError("无法读取模型 CLI 输出，已停止") from exc
             raise AskError(f"模型 CLI 超时（{timeout:g} 秒），已停止") from exc
+        finally:
+            if timing:
+                timing.report(trace)
     diagnostic = stderr.decode("utf-8", errors="replace")
     if trace:
         trace.emit("CLI response", {"exit_code": process.returncode, "stdout": stdout.decode("utf-8", errors="backslashreplace"),
@@ -195,12 +213,15 @@ def _codex_policy(executable: str, timeout: float) -> list[str]:
 def cli_answer(provider: dict, model: str | None, system: str, prompt: str,
                timeout: float, trace: DebugTrace | None = None) -> str:
     kind = provider.get("type")
-    executable = shutil.which(provider.get("executable", ""))
+    command = provider.get("executable", "")
+    if not isinstance(command, str) or "\x00" in command:
+        raise AskError("模型 CLI 路径无效")
+    executable = shutil.which(command)
     if not executable:
         raise AskError("模型 CLI 不存在")
     model = model or provider.get("model")
-    if model is not None and not isinstance(model, str):
-        raise AskError("model 必须为字符串")
+    if model is not None and (not isinstance(model, str) or "\x00" in model):
+        raise AskError("model 必须是不含空字符的字符串")
     if kind == "codex":
         started = time.monotonic()
         web_search = provider.get("web_search", True)
@@ -248,14 +269,14 @@ def cli_answer(provider: dict, model: str | None, system: str, prompt: str,
     if kind == "dsh":
         # rc.5 accepts --patch at the launcher layer, not permission flags on
         # headless. Keep policy and credential reuse scoped to this invocation.
-        overlay = dsh_patch(model, system)
+        overlay = dsh_patch(model, system, provider.get("reasoning_effort", DEFAULTS["dsh"]["reasoning_effort"]))
         with tempfile.TemporaryDirectory(prefix="askai-dsh-") as directory:
             patch = Path(directory) / "askai.patch.yml"
             patch.write_text(overlay, encoding="utf-8")
             if trace:
                 trace.emit("DSH invocation policy", {"sandbox": "read-only", "approval": "never", "tools": "全部禁用（启动前必需的工具守卫）",
                                                     "credentials": "复用 DSH 已保存凭据，仅本次调用启用",
-                                                    "model": model or "沿用 DSH 配置"})
+                                                    "model": model or "沿用 DSH 配置", "推理强度（请求值）": provider.get("reasoning_effort", DEFAULTS["dsh"]["reasoning_effort"])})
             return run_cli([executable, "--profile", "headless", "--patch", str(patch), "-"],
                            prompt, timeout, trace=trace)
     if kind == "command":
@@ -380,7 +401,8 @@ def api_answer(provider: dict, model: str | None, system: str, prompt: str,
 def answer(provider: dict, model: str | None, system: str, prompt: str,
            timeout: float, trace: DebugTrace | None = None) -> str:
     key_env = api_key_env_name(provider)
-    trace = trace or DebugTrace(secrets=[os.environ.get(key_env, "")])
+    trace = trace or DebugTrace()
+    trace.add_secrets([os.environ.get(key_env, "")])
     method = api_answer if provider.get("type") == "api" else cli_answer
     if trace:
         trace.emit("AI request", {"system_prompt": system, "user_context": prompt})

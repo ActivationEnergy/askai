@@ -48,7 +48,7 @@ uv tool install .
 
 If the command is not found after installation, run `uv tool update-shell`, follow its instructions, and open a new terminal.
 
-After updating the source, run `uv tool install --force .` from the source directory to reinstall. To uninstall, use `uv tool uninstall askai-cli`. You can also run `./bin/askai` directly from the checkout without installing.
+After updating the source, run `uv tool install --force .` from the source directory to reinstall. To uninstall, use `uv tool uninstall askai-cli`. For a source checkout, use `uv run ./bin/askai` so uv installs the interactive dependencies.
 
 </details>
 
@@ -78,7 +78,7 @@ askai "Show the ten largest files in the current directory"
 
 You do not need to change shell settings for normal questions. Run `askai-config` later to change the default AI or type natural-language questions directly at the shell prompt.
 
-`askai` follows your saved default. For example, when DSH is your default, these questions use DSH and its saved credentials, without a separate DeepSeek API key. The API connection described below applies when you explicitly use `askds`.
+`askai` follows your saved default. For example, when DSH is your default, these questions use DSH and its saved credentials, without a separate DeepSeek API key. The API connection below applies to `askds`, `--provider deepseek`, or DeepSeek API selected as the default backend.
 
 ## Read the answer and choose an action
 
@@ -92,9 +92,26 @@ askai offers one or more options, each with a command and a short explanation. U
 | `p1` | Print its command to the terminal without copying or running it |
 | `q` or Enter | Cancel |
 
+Commands use bold terminal green; shortcut keys and the active prompt use terminal magenta. Command lines have no added borders, line numbers, or indentation for mouse selection. Shortcuts share one row when space allows and wrap into compact groups in narrower terminals.
+
+In an interactive terminal, number keys execute immediately without Enter. Press `c`, `p`, or `e`, followed by an option number. Esc goes back; q or Enter cancels. Text input still uses Enter to submit. Basic terminals (`TERM=dumb`) retain line-based input.
+
 Replace `1` with `2` for the second option, for example `c2`. If important information is missing, the AI may ask for clarification instead of suggesting a command.
 
 Replace example filenames with actual filenames. Include paths, the intended scope, and the desired result in your question when possible.
+
+Use these first-level actions to improve an answer:
+
+| Key | Action |
+| --- | --- |
+| `r` | Select a reasoning level and retry; currently supported for DSH |
+| `m` | Select another backend and model, then retry |
+| `a` | Add requirements and press Enter to retry; blank input returns |
+| `b` | Restore the previous successful answer and its settings; shown when available |
+
+DSH defaults to low reasoning, with off, low, high, and max available. The displayed level is a requested setting, not verified server behavior. API backends offer presets and an explicit model-list fetch; Codex/DSH reuse native settings or an explicitly configured model. Claude uses isolated settings and does not load user/project settings files.
+
+Changes apply only to this question. Retries include the original question and previously accepted supplements, without previous model answers. Cancellation, failure, or a clarification-only response preserves the current answer. Selecting unchanged settings makes no additional request.
 
 ## Choose an AI
 
@@ -153,7 +170,7 @@ Confirm before saving. Common models are built-in presets for the corresponding 
 
 The menu shows when the built-in catalog was checked against official documentation. See the [model catalog and sources](docs/references.md#内置型号目录) (Chinese). Updates to presets do not automatically overwrite a model you have already saved.
 
-If discovery fails, existing settings stay unchanged; return to a common or currently configured model. Custom IDs are available under “高级设置 → 手动输入模型 ID” (advanced settings → enter a model ID). askai does not maintain a separate CLI model catalog; change the native model in that CLI's own settings.
+If discovery fails, existing settings stay unchanged; return to a common or currently configured model. Custom IDs are available under “高级设置 → 手动输入模型 ID” (advanced settings → enter a model ID). askai does not maintain a separate CLI model catalog. Codex/DSH can use their native model settings; Claude uses isolated settings and requires an explicit AskAI model override to select a configured model.
 
 To override settings for one question:
 
@@ -162,7 +179,7 @@ askai --provider dsh "How do I check which ports are in use?"
 askai --provider codex --model MODEL_ID "How do I check disk usage?"
 ```
 
-Replace `MODEL_ID` with an ID supported by the selected connection. `--model` overrides the model saved in askai. Without a saved model, CLI connections use their own settings, while API connections use their built-in default; custom APIs need an explicit model.
+Replace `MODEL_ID` with an ID supported by the selected connection. `--model` overrides the model saved in askai. Without a saved model, Codex/DSH use native settings. Claude does not load user/project/local settings files; its actual model may still depend on its environment. API connections use the built-in default; custom APIs need an explicit model.
 
 Automatic selection checks **Codex → DSH → DeepSeek API → Kimi → MiniMax → GLM**. Claude is used only when explicitly selected. If the selected service fails, askai reports an error rather than silently switching to another service.
 
@@ -201,10 +218,10 @@ For complex tasks, an answer may contain a standalone Python script. The source 
 
 | Input | Action |
 | --- | --- |
-| `r1` | Copy the first option's Python source |
+| `v1` | Copy the first option's Python source |
 | `s1` | Save it to a new file you choose, without overwriting an existing file |
 
-`p1` and `c1` produce a self-contained command containing the full code, without relying on temporary files. Use `r1` or `s1` if the code is too long. Running scripts requires `python3` on your `PATH`. Syntax checks do not prove that a script's logic is correct.
+`p1` and `c1` produce a self-contained command containing the full code, without relying on temporary files. Use `v1` or `s1` if the code is too long. Running scripts requires `python3` on your `PATH`. Syntax checks do not prove that a script's logic is correct.
 
 ## Useful options
 
@@ -216,6 +233,8 @@ For complex tasks, an answer may contain a standalone Python script. The source 
 | `askai --timeout 60 "question"` | Set the model wait time to 60 seconds |
 | `askai --debug "question"` | Show service details, model parameters, and interactions for troubleshooting |
 | `askai --help` | List all options |
+
+`--debug` also reports local preparation, CLI milestones, and answer parsing times. CLI milestones are cumulative observations, not additive durations. DSH catalog and reasoning markers do not measure individual server-side phases. Timings go to stderr without changing command or JSON output.
 
 Debug output attempts to hide keys. Questions, paths, and answers may still contain private information; review logs before sharing. Neither `--print` nor `--json` executes suggestions. Redirecting normal output to a file also skips the execution menu.
 
@@ -261,6 +280,10 @@ Uninstalling does not automatically delete model configuration, credentials, or 
 
 Report problems through [Issues](https://github.com/ActivationEnergy/askai/issues). Include your OS, shell, command, and error messages with sensitive information removed.
 
-Developers can run `python3 -m unittest discover -s tests -v` from the source directory. Further technical documentation (Chinese): [interface references](docs/references.md) · [backend registry](docs/backend-registry.md).
+Developers can run `uv run python -m unittest discover -s tests -v` from the source directory. Further technical documentation (Chinese): [interface references](docs/references.md) · [backend registry](docs/backend-registry.md).
 
 Licensed under the [MIT License](LICENSE). The command-not-found integration approach was inspired by [ccline](https://github.com/jianshuo/ccline).
+
+Python execution, copied commands, and the suggested command for saved scripts use `python3 -I -X utf8`. This ignores PYTHONPATH, user site packages, and implicit imports from the working directory. Explicitly add an import path when required. `__file__` is a temporary path for immediate execution, undefined for inline commands, and the saved path for saved scripts; locate input data via arguments or the working directory.
+
+Version 0.1.4 changes the shell execution exchange protocol. Reopen the terminal or reload the integration once after upgrading. Old integrations fail closed with reload guidance. Without integration, `$SHELL` is a login-shell hint; use `--shell` when running a different nested shell.

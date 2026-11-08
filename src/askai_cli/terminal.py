@@ -5,14 +5,22 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import os
 import sys
+import unicodedata
 
 from .core import clean_display
 
 
 MODES = ("auto", "always", "never")
-STYLES = {"title": "1;36", "action": "1", "accent": "36", "current": "32",
+STYLES = {"title": "1;36", "command": "1;32", "command_title": "1;32", "interaction": "1;35", "action": "1", "accent": "36", "current": "32",
           "success": "32", "attention": "33", "error": "31",
           "diff-add": "32", "diff-remove": "31"}
+
+
+def configure_stdio():
+    """The CLI's text and machine-output channels always use UTF-8."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and (stream.encoding or "").lower().replace("-", "") != "utf8":
+            stream.reconfigure(encoding="utf-8", errors="strict")
 
 
 def argument_parser(**kwargs) -> argparse.ArgumentParser:
@@ -113,8 +121,42 @@ class Terminal:
             text = "\n".join(marker + line if line else "" for line in text.split("\n"))
         self.writer.write(text + "\n")
 
+    def command(self, code: str) -> None:
+        """Isolate raw command lines visually without adding copyable prefixes."""
+        self.line()
+        self.line(code, "command")
+        self.line()
+
+    def action_bar(self, groups, width=None) -> None:
+        """Pack shortcuts by terminal width; never wrap or decorate command text."""
+        if width is None:
+            try:
+                width = os.get_terminal_size(self.writer.fileno()).columns or 80
+            except (AttributeError, OSError, ValueError):
+                width = 80
+        width = max(1, width)
+        def cells(text):
+            return sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
+        groups = [[(f"[{key}]", clean_display(label)) for key, label in group] for group in groups if group]
+        all_items = [item for group in groups for item in group]
+        def size(items):
+            return sum(cells(key + " " + label) for key, label in items) + max(0, len(items) - 1) * 2
+        if size(all_items) <= width:
+            groups = [all_items]
+        for group in groups:
+            used, chunks = 0, []
+            for key, label in group:
+                length = cells(key + " " + label)
+                if chunks and used + 2 + length > width:
+                    self.writer.write("  ".join(chunks) + "\n")
+                    used, chunks = 0, []
+                chunks.append(self.text(key, "interaction") + " " + label)
+                used += length + (2 if len(chunks) > 1 else 0)
+            if chunks:
+                self.writer.write("  ".join(chunks) + "\n")
+
     def prompt(self, value) -> None:
-        self.writer.write(self.text(value, "action"))
+        self.writer.write(self.text(value, "interaction"))
         self.writer.flush()
 
     def notice(self, label: str, detail="", role: str = "attention") -> None:

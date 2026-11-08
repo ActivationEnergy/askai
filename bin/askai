@@ -6,4 +6,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from askai_cli.cli import main
 
-main(launcher=(str(Path(__file__).resolve().parent / "askai"),))
+entry = str(Path(__file__).resolve().parent / "askai")
+# uv run changes PATH only for its child. Keep its stable virtualenv interpreter
+# when emitting a function that will later run in the parent shell.
+prefix = Path(sys.prefix)
+launcher = (str(prefix / "bin/python"), "-I", entry) if (prefix / "pyvenv.cfg").is_file() else (entry,)
+main(launcher=launcher)

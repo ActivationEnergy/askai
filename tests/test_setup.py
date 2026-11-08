@@ -279,7 +279,7 @@ class ShellSetupIntegrationTests(unittest.TestCase):
                     flags = {"fish": ["--no-config"], "zsh": ["-f"], "bash": ["--noprofile", "--norc"]}[shell]
                     code, output = fixtures.terminal([executable, *flags, "-i", "-c", f"source {shlex.quote(str(rc))}; 怎样查看磁盘占用"],
                                                     env, ("q\n",))
-                    self.assertEqual(code, 127 if shell == "fish" else 0, output)
+                    self.assertEqual(code, 127, output)
                     self.assertIn("正在询问 fixture", output)
                     result = subprocess.run([*args, "--status"], env=env, capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
