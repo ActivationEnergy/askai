@@ -23,6 +23,10 @@ PATTERNS = {
     "private key": re.compile(rb"-----BEGIN (?:OPENSSH |RSA |EC |DSA )?PRIVATE KEY-----"),
     "possible access token": re.compile(rb"(?:gh[pousr]_[A-Za-z0-9]{25,}|github_pat_[A-Za-z0-9_]{30,}|sk-[A-Za-z0-9_-]{32,})"),
 }
+# Exempt only the user/host portion of a complete public Git SSH URL from
+# email detection. The URL still undergoes all path/token/identity checks.
+GIT_SSH = re.compile(rb"(?<![A-Za-z0-9_.+%-])(?:ssh://)?(?P<address>git@github\.com)(?::|/)[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?=$|[\s`'\"<>])", re.I)
+HOME_PLACEHOLDERS = {b"...", "…".encode("utf-8")}
 EMAIL = re.compile(rb"[A-Za-z0-9_.+%-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 
 
@@ -31,8 +35,16 @@ def git(*args: str) -> bytes:
 
 
 def scan(raw: bytes, identities: set[bytes]) -> set[str]:
-    findings = {label for label, pattern in PATTERNS.items() if pattern.search(raw)}
+    findings = set()
+    for label, pattern in PATTERNS.items():
+        for match in pattern.finditer(raw):
+            if label == "absolute home directory" and match.group().split(b"/")[2] in HOME_PLACEHOLDERS:
+                continue
+            findings.add(label)
+    ssh_addresses = {match.span("address") for match in GIT_SSH.finditer(raw)}
     for match in EMAIL.finditer(raw):
+        if match.span() in ssh_addresses:
+            continue
         domain = match.group(1).lower()
         if not (domain.endswith((b".test", b".invalid")) or domain in
                 {b"example.com", b"example.org", b"example.net"}):

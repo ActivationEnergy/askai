@@ -1,5 +1,6 @@
 """Preview, validate, copy, save and execute independent Python scripts."""
 
+import json
 import os
 from pathlib import Path
 import shlex
@@ -50,7 +51,7 @@ def preview(item: dict) -> str:
         return item["command"]
     args = item.get("args", [])
     detail = "运行参数: （无）" if not args else "运行参数:\n" + "\n".join(
-        f"  {index}. {clean_display(value)}" for index, value in enumerate(args, 1))
+        f"  {index}. {json.dumps(value, ensure_ascii=False)}" for index, value in enumerate(args, 1))
     return f"Python 脚本（python3）\n{detail}\n\n{item['code']}"
 
 

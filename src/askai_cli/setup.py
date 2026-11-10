@@ -4,6 +4,9 @@ from contextlib import contextmanager
 import fcntl
 import json
 import os
+
+from .credentials import api_key, source_label, stored_key, save_key, store_path, validate_key
+from .interaction import read_secret
 from pathlib import Path
 import re
 import stat
@@ -15,7 +18,7 @@ from . import __version__
 from .core import AskError, SHELLS, api_key_env_name, clean_display, expand_path, menu_index, xdg_directory
 from . import startup
 from . import core, preferences
-from .providers import available, list_api_models, model_id_allowed, providers
+from .providers import api_base_url, available, list_api_models, model_id_allowed, providers
 from .registry import AUTO_ORDER, MENU_ORDER, PROVIDER_SPECS, ModelSpec, common_models, display_name, implicit_model_label
 from .terminal import Terminal, add_color_argument, argument_parser, configure, saved_mode
 
@@ -110,13 +113,15 @@ def configuration(path: Path):
     return found[2] if found else None
 
 
-def show_status(shells, state: dict, writer, overrides=None) -> None:
+def show_status(shells, state: dict, writer, overrides=None) -> bool:
     ui = Terminal(writer)
+    success = True
     ui.line("已保存的终端设置（重新打开终端后生效）", "title")
     for shell in shells:
         try:
             paths = known_paths(shell, state, overrides)
         except AskError as exc:
+            success = False
             ui.notice(f"{shell} 无法自动定位", str(exc))
             paths = [Path(p) for p in state["locations"].get(shell, [])]
         for path in paths:
@@ -130,9 +135,11 @@ def show_status(shells, state: dict, writer, overrides=None) -> None:
                     description = "未配置"
                 ui.line(f"{path}: {description}")
             except (OSError, AskError, RuntimeError) as exc:
+                success = False
                 ui.notice("配置异常", f"{path}: {exc}", "error")
     ui.line("这里显示文件中保存的设置，不能直接确认当前窗口是否已加载。")
     ui.line("Bash/zsh 直接输入问题时，选中执行的 cd/环境变量修改不会保留到当前终端；使用 askai 提问可保留。")
+    return success
 
 
 def maybe_hint() -> None:
@@ -169,7 +176,7 @@ def _read(reader, writer, prompt: str) -> str | None:
 
 
 def build_changes(shell: str, paths: list[Path], state: dict, hook: bool, aliases: bool,
-                  remove: bool, executable: str, include_defaults: bool = True):
+                  remove: bool, executable: str | None, include_defaults: bool = True):
     if remove:
         return startup.plan(known_paths(shell, state, paths), shell, False, False, True, executable)
     changes = startup.plan(paths, shell, hook, aliases, executable=executable)
@@ -362,11 +369,14 @@ class Wizard:
     def shell_change(self, hook, remove=False):
         while True:
             try:
-                executable = startup.interpreter(self.shell, self.executables.get(self.shell))
+                executable = startup.interpreter(self.shell, self.executables.get(self.shell), allow_missing=remove)
                 paths = self.selected_paths()
-                changes = build_changes(self.shell, paths, read_state(), hook, True, remove, executable,
+                changes = build_changes(self.shell, paths, read_state(), hook, True, remove,
+                                        self.executables.get(self.shell) or executable,
                                         include_defaults=self.shell not in self.paths)
-                self.say(f"\nShell：{self.shell}；程序：{executable}")
+                self.say(f"\nShell：{self.shell}；程序：{executable or '未检测到'}")
+                if executable is None:
+                    self.say("未检测到此 Shell，仅移除已识别的 askai 管理块；无法进行该 Shell 的语法检查。")
                 self.say("移除 askai 终端设置；保留用户其他内容和 AI 配置。" if remove else
                          f"直接提问：{'开启' if hook else '关闭'}；askai 和模型快捷命令可在当前会话执行选中的命令。")
                 if not changes:
@@ -411,7 +421,7 @@ class Wizard:
                 self.ui.notice("设置已保存", activation + "返回上一级，可继续设置。", "success")
                 for backup in backups:
                     self.say(f"恢复备份：{backup}")
-                return
+                return True
             except (AskError, OSError, RuntimeError) as exc:
                 self.error(exc)
                 self.menu("1 修改文件或程序路径\n2 重试\n0 返回上一级")
@@ -426,7 +436,7 @@ class Wizard:
     def model_text(provider):
         value = provider.get("model")
         if value and provider.get("type") == "api":
-            key = os.environ.get(api_key_env_name(provider), "")
+            key = api_key(provider)
             if key and key in str(value):
                 return "已隐藏疑似密钥，请重新选择模型"
         return value or implicit_model_label(provider)
@@ -439,7 +449,7 @@ class Wizard:
     @staticmethod
     def readiness(provider):
         if provider.get("type") == "api":
-            return ("已设置密钥" if available(provider) else "未设置 " + str(provider.get("api_key_env", "api_key_env"))) + "（未验证连接）"
+            return source_label(provider) + "（未验证连接）"
         return "已检测到 CLI（未验证登录）" if available(provider) else "未检测到 CLI"
 
     def environment_note(self):
@@ -501,11 +511,103 @@ class Wizard:
                     self.say("自动选择顺序：" + " → ".join(AUTO_ORDER))
                     self.say("Claude 仅在明确选择时使用。调用失败会报错，不静默换服务。可在任意行输入 d编号，固定使用该后端。")
                 else:
-                    self.model_menu(name)
+                    if items[name].get("type") == "api":
+                        self.api_menu(name)
+                    else:
+                        self.model_menu(name)
             except (AskError, OSError, RuntimeError) as exc:
                 self.error(exc)
                 if self.ask("输入 1 重试读取 AI 配置，0 返回主菜单 [0]: ") != "1":
                     return
+
+    def api_menu(self, name):
+        """Keep model selection and credential management in separate flows."""
+        while True:
+            provider = providers(core.load_config()).get(name)
+            if not provider or provider.get("type") != "api":
+                return
+            self.say(f"\n{self.backend_text(name, provider)}", "title")
+            self.say(f"当前模型：{self.model_text(provider)}")
+            self.say(self.readiness(provider))
+            self.menu("1 选择模型\n2 管理 API 密钥\n0 返回 AI 模型与后端列表")
+            choice = self.ask()
+            if choice in ("", "0"):
+                return
+            if choice == "1":
+                selected = self.model_menu(name)
+                provider = providers(core.load_config()).get(name)
+                if selected and provider and provider.get("type") == "api" and not api_key(provider):
+                    self.say("模型已选定，还需配置 API 密钥才能提问。")
+                    self.key_menu(name)
+            elif choice == "2":
+                self.key_menu(name)
+            else:
+                self.say("请选择菜单中的编号。")
+
+    def key_menu(self, name):
+        while True:
+            provider = providers(core.load_config()).get(name)
+            if not provider or provider.get("type") != "api":
+                return
+            self.say(f"\n{display_name(name)} · API 密钥", "title")
+            self.say(self.readiness(provider))
+            self.menu("1 粘贴并保存密钥（已有密钥可替换）")
+            self.menu(f"2 从环境变量导入并保存 {api_key_env_name(provider)}\n3 删除已保存的密钥\n0 返回服务设置")
+            choice = self.ask()
+            if choice in ("", "0"):
+                if not api_key(provider):
+                    self.say("尚未完成配置：缺少 API 密钥，此服务暂不可用于提问。")
+                return
+            if choice not in ("1", "2", "3"):
+                self.say("请选择菜单中的编号。")
+                continue
+            try:
+                self.configure_api_key(name, provider, paste=choice == "1", delete=choice == "3")
+            except (AskError, OSError) as exc:
+                self.error(exc)
+
+    def configure_api_key(self, name, provider, *, paste=False, delete=False):
+        """Configure one key source in place, without adding a menu layer."""
+        base = api_base_url(provider)
+        variable = api_key_env_name(provider)
+        if delete:
+            if not stored_key(provider):
+                self.say("此连接没有本地保存的密钥；环境变量不由 AskAI 保存或删除。")
+                return
+            value = None
+            self.say("将删除此连接本地保存的密钥，不影响其他 API 连接。")
+            self.say(f"删除后仍会读取环境变量 {variable}。" if variable and os.environ.get(variable)
+                     else "删除后此 API 将处于未配置密钥状态。")
+        elif paste:
+            previous = stored_key(provider)
+            value = read_secret(self.reader, self.writer, existing=bool(previous))
+            if value is None or (not value and not previous):
+                self.say("已取消，密钥未改变。")
+                return
+            if not value:
+                value = previous
+                self.say("将使用已保存的本地密钥。")
+            else:
+                self.say("将保存粘贴的密钥并优先使用它；替换此连接的旧密钥，不保留旧密钥备份。")
+            validate_key(value)
+        else:
+            if not variable or not os.environ.get(variable):
+                self.say(f"当前进程未检测到 {variable or '指定环境变量'}；可以直接选择粘贴密钥。")
+                return
+            value = validate_key(os.environ[variable])
+            self.say(f"将从环境变量 {variable} 导入并保存密钥，以后无需再次设置环境变量。")
+            if stored_key(provider):
+                self.say("将替换此连接已保存的密钥，不保留旧密钥备份。")
+        self.say(f"API 地址：{base}\n保存位置：{store_path().absolute()}")
+        self.say("专用密钥文件：仅当前用户可读写（0600），明文未加密；不写入 config.toml 或 Shell 启动文件。")
+        if self.ask("确认密钥设置？[y/N]: ").lower() != "y":
+            self.say("未保存，密钥未改变。")
+            return
+        if providers(core.load_config()).get(name) != provider:
+            self.say("连接设置已变化，未保存；请重新选择。")
+            return
+        save_key(provider, value)
+        self.say("密钥设置已更新（未验证连接）。")
 
     def model_menu(self, name):
         while True:
@@ -517,7 +619,7 @@ class Wizard:
                 self.say("此后端使用自定义命令适配器，不支持单独的模型参数；请在配置文件的 args 或该程序自身配置中设置模型。默认后端仍可从列表选择。")
                 return
             api = provider.get("type") == "api"
-            key = os.environ.get(api_key_env_name(provider), "") if api else ""
+            key = api_key(provider) if api else ""
             choices = [item for item in common_models(name, provider) if model_id_allowed(item.id, key)]
             if not api:
                 choices.append(ModelSpec("", implicit_model_label(provider) if provider.get("type") == "claude" else f"沿用 {display_name(name)} 当前模型（推荐）"))
@@ -538,7 +640,8 @@ class Wizard:
                 self.menu(f"{more} 更多型号（从服务商获取，需 API 密钥）")
             else:
                 self.say("Claude 使用隔离设置，不读取用户或项目设置文件；可在高级设置中指定型号。" if provider.get("type") == "claude" else "更换原生模型可在该 CLI 自身设置中选择；askai 沿用其配置。")
-            self.menu(f"{advanced} 高级设置\n0 返回 AI 模型与后端列表")
+            self.menu(f"{advanced} 高级设置")
+            self.menu("0 返回服务设置" if api else "0 返回 AI 模型与后端列表")
             answer = self.ask()
             if answer in ("", "0"):
                 return
@@ -566,10 +669,13 @@ class Wizard:
             if providers(core.load_config()).get(name) != provider:
                 self.say("此调用方式的配置已发生变化；未保存旧目录中的选择，请重新选择。")
                 return
-            self.save_preference(("providers", name, "model"), value,
+            if value == current:
+                self.say("这已经是当前型号，无需保存。")
+                return True
+            return self.save_preference(("providers", name, "model"), value,
                            f"{name} 模型：{self.model_text(provider)} → {value or '沿用 CLI 当前配置'}；默认后端和其他配置保持不变。",
+                           destination="服务设置" if api else "AI 模型与后端列表",
                            expected_provider=(name, provider))
-            return
 
     def advanced_model_id(self, provider):
         """Keep custom IDs available without making normal users fill a form."""
@@ -587,7 +693,7 @@ class Wizard:
                 raise _EndSetup
             if not value:
                 continue
-            key = os.environ.get(api_key_env_name(provider), "") if provider.get("type") == "api" else ""
+            key = api_key(provider) if provider.get("type") == "api" else ""
             if not model_id_allowed(value, key):
                 self.say("模型 ID 无效或包含敏感内容；请核对服务提供的型号名称。")
                 continue
@@ -650,7 +756,7 @@ class Wizard:
                 self.ui.notice("设置已保存", message or f"AI 设置无需重开终端；返回{destination}。", "success")
                 for backup in backups:
                     self.say(f"恢复备份：{backup}")
-                return
+                return True
             except (AskError, OSError, RuntimeError) as exc:
                 self.error(exc)
                 if self.ask(f"输入 1 重新预览，0 返回{destination} [0]: ") != "1":
@@ -691,7 +797,7 @@ def main(argv=None, reader=None, writer=None) -> int:
     from .terminal import configure_stdio
     configure_stdio()
     configure()
-    parser = argument_parser(prog="askai-config", description="管理 Shell 集成、AI 模型和默认后端；不会调用 AI 或修改模型密钥。")
+    parser = argument_parser(prog="askai-config", description="管理 Shell 集成、AI 模型、API 密钥和默认后端；不会自动发起模型生成。")
     add_color_argument(parser)
     parser.add_argument("--shell", choices=SHELLS)
     parser.add_argument("--status", action="store_true", help="只读查看终端和 AI 配置状态")
@@ -703,23 +809,39 @@ def main(argv=None, reader=None, writer=None) -> int:
     writer, reader = writer or sys.stdout, reader or sys.stdin
     if any(any(ord(c) < 32 for c in p) for p in args.startup_file):
         raise AskError("配置路径不能包含控制字符")
-    config = core.load_config()
-    configure(config, args.color)
     wizard = Wizard(args, reader, writer)
     if args.status:
+        success = True
+        config_error = None
+        try:
+            config = core.load_config()
+            configure(config, args.color)
+            items = providers(config)
+        except (AskError, OSError, RuntimeError) as exc:
+            config_error = exc
         try:
             state = read_state()
-        except AskError as exc:
-            wizard.say(exc)
+        except (AskError, OSError, RuntimeError) as exc:
+            wizard.ui.notice("设置状态异常", str(exc), "error")
             state = {"locations": {}}
-        show_status([args.shell] if args.shell else SHELLS, state, writer,
-                    [expand_path(p).absolute() for p in args.startup_file] or None)
-        config = core.load_config()
+            success = False
+        if not show_status([args.shell] if args.shell else SHELLS, state, writer,
+                           [expand_path(p).absolute() for p in args.startup_file] or None):
+            success = False
+        if config_error is not None:
+            wizard.ui.notice("AI 配置异常", str(config_error), "error")
+            return 1
         wizard.say(f"AI 配置文件：{core.config_path()}；已保存默认后端：{config.get('provider', 'auto')}")
-        for name, provider in providers(config).items():
-            wizard.say(f"{name}：模型 {wizard.model_text(provider)}；{wizard.readiness(provider)}")
+        for name, provider in items.items():
+            try:
+                wizard.say(f"{name}：模型 {wizard.model_text(provider)}；{wizard.readiness(provider)}")
+            except (AskError, OSError, RuntimeError) as exc:
+                wizard.ui.notice(f"{name} 配置异常", str(exc), "error")
+                success = False
         wizard.environment_note()
-        return 0
+        return 0 if success else 1
+    config = core.load_config()
+    configure(config, args.color)
     if not reader.isatty() or not writer.isatty():
         raise AskError("设置向导需要交互终端；脚本可使用 askai-config --status")
     wizard.say("修改文件前会展示将保存的设置，由你确认。每层菜单可继续操作，输入 0 返回；EOF 退出，未确认的修改不保存。")

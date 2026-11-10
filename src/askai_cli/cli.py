@@ -3,6 +3,8 @@
 import argparse
 import json
 import os
+
+from .credentials import api_key, source_label
 from pathlib import Path
 import platform
 import subprocess
@@ -14,7 +16,7 @@ from .clipboard import copy_command
 from .execution import CommandExchange, WRAPPER_FLAG, child_env
 from .registry import implicit_model_label
 from .core import (AskError, SHELLS, api_key_env_name, clean_display, config_path, instructions,
-                   load_config, menu_index, parse_answer, shell_name, validate_command)
+                   load_config, menu_index, parse_answer, shell_name, validate_command, json_for_output)
 from .providers import answer, available, providers, select_provider
 from .debug import DebugTrace
 from .shells import SHORTCUTS, integration
@@ -84,9 +86,9 @@ def management(argv: list[str], *, launcher: tuple[str, ...] | None = None) -> i
         ui.line(f"配置: {config_path()} ({'存在' if config_path().exists() else '使用默认值'})")
         ui.line(f"默认后端: {os.environ.get('ASKAI_PROVIDER') or config.get('provider', 'auto')}")
     for name, provider in items.items():
-        status = "已检测到 CLI（未验证登录）" if provider.get("type") != "api" else "已设置密钥（未验证连接）"
+        status = "已检测到 CLI（未验证登录）" if provider.get("type") != "api" else source_label(provider) + "（未验证连接）"
         if not available(provider):
-            status = "未检测到 CLI" if provider.get("type") != "api" else "未设置 " + str(provider.get("api_key_env", "api_key_env"))
+            status = "未检测到 CLI" if provider.get("type") != "api" else "未配置密钥；运行 askai-config 设置"
         if available(provider):
             ui.line(f"{name:10} {provider.get('type', '?'):8} {status}")
         else:
@@ -118,20 +120,23 @@ def choose(data: dict, reader, writer, shell: str = "bash", *, options=None) -> 
             ui.notice("注意", item["warning"])
     if not data["commands"]:
         return "cancel", None
-    from .interaction import clear_pending_input, read_choice, supports_keys
+    from .interaction import clear_pending_input, read_choice, record_choice, supports_keys
     options = options or {}
     has_scripts = any(is_script(item) for item in data["commands"])
+    single_answer = len(data["commands"]) == 1
     single_keys = supports_keys(reader, writer) and len(data["commands"]) <= 9
+    action_suffix = "" if single_keys or single_answer else "编号"
+    direct_actions = {"e", "p", "c"} | ({"v", "s", "r"} if has_scripts else set())
     while True:
         ui.line()
         number = "1" if len(data["commands"]) == 1 else f"1-{len(data['commands'])}"
         primary = [(number, "立即执行" if single_keys else "执行"),
-                   ("e" if single_keys else "e编号", "解释"),
-                   ("p" if single_keys else "p编号", "打印"),
-                   ("c" if single_keys else "c编号", "复制")]
+                   ("e" + action_suffix, "解释"),
+                   ("p" + action_suffix, "打印"),
+                   ("c" + action_suffix, "复制")]
         if has_scripts:
-            primary += [("v" if single_keys else "v编号", "复制源码"),
-                        ("s" if single_keys else "s编号", "保存脚本")]
+            primary += [("v" + action_suffix, "复制源码"),
+                        ("s" + action_suffix, "保存脚本")]
         ui.action_bar([primary, [*options.items(), ("q", "退出")]])
         if single_keys:
             line = read_choice(reader, writer, len(data["commands"]), has_scripts, extra=options)
@@ -140,14 +145,25 @@ def choose(data: dict, reader, writer, shell: str = "bash", *, options=None) -> 
             ui.prompt("q取消 [默认 q]: ")
             line = reader.readline()
         value = line.strip().lower()
+        entered = line.strip() or ("Enter" if line else "EOF")
         if not line or value in ("", "q", "quit"):
+            if not single_keys:
+                record_choice(writer, entered, "退出")
             return "cancel", None
         if value in options:
+            if not single_keys:
+                record_choice(writer, entered, options[value])
             return value, None
+        if single_answer and value in direct_actions:
+            value += "1"
         action = {"v": "source", "e": "explain", "p": "print", "c": "copy", "r": "source", "s": "save"}.get(value[:1], "run")
         number = value[1:] if action != "run" else value
         index = menu_index(number, len(data["commands"]))
         if index is not None:
+            if not single_keys:
+                label = {"run": "执行", "explain": "解释", "print": "打印", "copy": "复制",
+                         "source": "复制源码", "save": "保存脚本"}[action]
+                record_choice(writer, entered, f"{label}方案 {index + 1}")
             item = data["commands"][index]
             if action == "explain":
                 ui.line(f"\n[{index + 1}] {item['label']} — 解释", "title")
@@ -247,6 +263,10 @@ def _run(argv, *, launcher, exchange) -> int:
     args = p.parse_intermixed_args(argv[:boundary])
     if boundary < len(argv):
         args.question += argv[boundary + 1:]
+    for option in ("provider", "model"):
+        value = getattr(args, option)
+        if value is not None and not value.strip():
+            raise AskError(f"--{option} 不能留空；省略该选项可使用默认设置")
     configure(explicit=args.color)
     question = " ".join(args.question).strip()
     if not question:
@@ -266,7 +286,7 @@ def _run(argv, *, launcher, exchange) -> int:
         raise AskError("timeout 必须为 0 到 3600 之间的秒数")
     name, provider = select_provider(config, args.provider)
     model = args.model or os.environ.get("ASKAI_MODEL")
-    trace = DebugTrace(args.debug, secrets=[os.environ.get(api_key_env_name(provider), "")])
+    trace = DebugTrace(args.debug, secrets=[api_key(provider)])
     trace.emit("backend", {"name": name, "type": provider.get("type"),
                           "requested_model": model or provider.get("model") or implicit_model_label(provider),
                           "timeout_seconds": timeout, "shell": shell,
@@ -287,7 +307,7 @@ def _run(argv, *, launcher, exchange) -> int:
     trace.emit("回答就绪计时", {"入口到回答解析完成": f"{time.perf_counter() - invocation_started:.3f} 秒",
                                   "范围": "包含调用及可能的一次格式修正，不含菜单选择和命令执行；debug 输出自身也会产生开销。"})
     if args.json:
-        print(json.dumps(data, ensure_ascii=False, indent=2))
+        print(json_for_output(data))
         return 0 if data["commands"] else 2
     if not data["commands"]:
         # A clarification is valid model output, but is not a command result.
@@ -359,7 +379,7 @@ def _run(argv, *, launcher, exchange) -> int:
 
 
     def request_again(next_state):
-        trace.add_secrets([os.environ.get(api_key_env_name(next_state.provider), "")])
+        trace.add_secrets([api_key(next_state.provider)])
         next_prompt = json.loads(prompt)
         next_prompt["question"] = next_state.question
         trace.emit("本次重新回答", {"后端": next_state.name, "模型": next_state.model or next_state.provider.get("model") or implicit_model_label(next_state.provider),
@@ -379,13 +399,13 @@ def _run(argv, *, launcher, exchange) -> int:
         try:
             tty = open("/dev/tty", "r", encoding="utf-8")
         except OSError:
-            print(json.dumps(data, ensure_ascii=False, indent=2))
+            print(json_for_output(data))
             return 0
         with tty:
             return review(tty)
 
 
-def main(*, launcher: tuple[str, ...] | None = None) -> None:
+def _main(*, launcher: tuple[str, ...] | None = None) -> int:
     # Re-decode OS arguments under UTF-8 where the filesystem codec follows a
     # legacy locale. Re-execution preserves the original entry and isolation flags.
     if sys.getfilesystemencoding().lower().replace("-", "") != "utf8":
@@ -409,11 +429,31 @@ def main(*, launcher: tuple[str, ...] | None = None) -> None:
     except KeyboardInterrupt:
         Terminal(sys.stderr).line("\n已取消。")
         code = 130
-    except BrokenPipeError:
-        code = 0
     except UnicodeError:
         Terminal(sys.stderr).notice("askai", "输入或输出不是有效 UTF-8，已停止。", "error")
+        code = 1
+    except BrokenPipeError:
+        raise
     except (OSError, subprocess.SubprocessError) as exc:
         Terminal(sys.stderr).notice("askai", str(exc), "error")
         code = 1
+    return code
+
+
+def main(*, launcher: tuple[str, ...] | None = None) -> None:
+    """Include dispatch, error diagnostics and buffered shutdown in the pipe boundary."""
+    try:
+        try:
+            code = _main(launcher=launcher)
+        except SystemExit as exc:
+            # argparse/help and the settings entry also need the final flush.
+            code = exc.code
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except BrokenPipeError:
+        # Prevent Python's shutdown flush from changing the exit code to 120.
+        with open(os.devnull, "wb") as sink:
+            os.dup2(sink.fileno(), 1)
+            os.dup2(sink.fileno(), 2)
+        code = 0
     raise SystemExit(code)

@@ -20,6 +20,11 @@ class TerminalText(io.StringIO):
 
 class CatalogTests(unittest.TestCase):
     def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="askai-catalog-credentials-")
+        self.addCleanup(temporary.cleanup)
+        store = patch("askai_cli.credentials.store_path", return_value=Path(temporary.name) / "credentials.json")
+        store.start()
+        self.addCleanup(store.stop)
         self.provider = {"type": "api", "base_url": "https://api.example.test/v1/",
                          "api_key_env": "CATALOG_TEST_KEY", "model": "saved-model"}
         self.secret = "FAKE_CATALOG_SECRET"
@@ -94,6 +99,9 @@ class CatalogWizardTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def wizard(self, answers, models=None):
+        # Enter model selection from the API service page.
+        if answers.startswith("3\n2\n"):
+            answers = answers[:4] + "1\n" + answers[4:]
         response = {"status": 200, "body": json.dumps({"data": [{"id": value} for value in
                      (models if models is not None else ["deepseek-flash", "deepseek-v4-pro"])]}).encode()}
         output = TerminalText()
@@ -188,7 +196,7 @@ class CatalogWizardTests(unittest.TestCase):
         output = TerminalText()
         with patch.object(setup, "list_api_models", side_effect=core.AskError("fixture unavailable")):
             setup.main(["--shell", "fish", "--color", "never"],
-                       TerminalText("3\n2\n2\n3\n1\nmanual-model\ny\n0\n0\n"), output)
+                       TerminalText("3\n2\n1\n2\n3\n1\nmanual-model\ny\n0\n0\n"), output)
         self.assertIn("现有设置未改变", output.getvalue())
         self.assertEqual(core.load_config()["providers"]["deepseek"]["model"], "manual-model")
 
@@ -242,7 +250,7 @@ class CatalogWizardTests(unittest.TestCase):
             return ["new-model"]
         output = TerminalText()
         with patch.object(setup, "list_api_models", side_effect=changed):
-            setup.main(["--shell", "fish", "--color", "never"], TerminalText("3\n2\n2\n1\n0\n0\n"), output)
+            setup.main(["--shell", "fish", "--color", "never"], TerminalText("3\n2\n1\n2\n1\n0\n0\n"), output)
         self.assertEqual(core.load_config()["providers"]["deepseek"]["model"], "saved-model")
         self.assertIn("未保存旧目录", output.getvalue())
 

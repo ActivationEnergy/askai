@@ -131,11 +131,11 @@ def decode(raw: bytes) -> tuple[str, str]:
     return text, "\r\n" if "\r\n" in text else "\n"
 
 
-def inspect_metadata(path: Path):
+def inspect_metadata(path: Path, *, require_write: bool = True):
     info = path.stat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
         raise AskError(f"仅支持本人拥有、没有硬链接的普通文件: {path}")
-    if not info.st_mode & stat.S_IWUSR or not os.access(path, os.W_OK):
+    if require_write and (not info.st_mode & stat.S_IWUSR or not os.access(path, os.W_OK)):
         raise AskError(f"配置文件不可写: {path}")
     if info.st_mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX) or getattr(info, "st_flags", 0):
         raise AskError(f"配置文件带特殊权限或文件标志，未修改: {path}")
@@ -205,11 +205,21 @@ def check_syntax(text: str, executable: str) -> None:
         raise AskError("拟写入文件未通过无执行语法检查，未修改:\n" + clean_display(result.stderr.strip()))
 
 
-def interpreter(shell: str, value: str | None = None) -> str:
+def interpreter(shell: str, value: str | None = None, *, allow_missing: bool = False) -> str | None:
+    """Permit actual absence only for removal; invalid shell identities still fail."""
     candidate = value
     if not candidate and Path(os.environ.get("SHELL", "")).name == shell:
         candidate = os.environ["SHELL"]
-    executable = shutil.which(candidate or shell)
+    candidate = candidate or shell
+    if any(ord(c) < 32 for c in candidate):
+        raise AskError("Shell 程序路径不能包含控制字符")
+    if Path(candidate).name != shell:
+        raise AskError(f"Shell 程序名称须为 {shell}；请明确选择实际使用的可执行文件")
+    executable = shutil.which(candidate)
+    if not executable and os.path.dirname(candidate) and (Path(candidate).exists() or Path(candidate).is_symlink()):
+        raise AskError(f"Shell 程序不可执行: {candidate}")
+    if not executable and allow_missing:
+        return None
     if not executable or Path(executable).name != shell:
         raise AskError(f"找不到 {shell} 解释器；请明确选择实际使用的可执行文件")
     return executable
@@ -223,7 +233,7 @@ def bash_hook_supported(executable: str) -> bool:
 
 def plan(paths: list[Path], shell: str, hook: bool, aliases: bool, remove: bool = False,
          executable: str | None = None) -> list[Change]:
-    executable = interpreter(shell, executable)
+    executable = interpreter(shell, executable, allow_missing=remove)
     if hook and shell == "bash" and not remove and not bash_hook_supported(executable):
         raise AskError("所选 Bash 低于 4，不支持直接输入问题；请选择“先输入 askai 再提问”，或实际使用新版 Bash")
     groups: dict[Path, list[Path]] = {}
@@ -268,7 +278,8 @@ def plan(paths: list[Path], shell: str, hook: bool, aliases: bool, remove: bool 
         if after == raw:
             continue
         new_text = (after or b"").decode()
-        check_syntax(new_text, executable)
+        if executable is not None:
+            check_syntax(new_text, executable)
         if any(path.name == ".profile" for path in logicals):
             check_syntax(new_text, "/bin/sh")
         if shell == "zsh":

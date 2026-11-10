@@ -7,6 +7,7 @@ import re
 import sys
 import tomllib
 import unittest
+import tempfile
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,13 @@ from askai_cli.core import AskError
 
 
 class RegistryTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="askai-unit-credentials-")
+        self.addCleanup(temporary.cleanup)
+        store = patch("askai_cli.credentials.store_path", return_value=Path(temporary.name) / "credentials.json")
+        store.start()
+        self.addCleanup(store.stop)
+
     def test_shortcuts_are_fixed_and_every_distributed_entry_point_exists(self):
         expected = {"askgpt": "codex", "askds": "deepseek", "askdsh": "dsh", "askcc": "claude",
                     "askkimi": "kimi", "askmm": "minimax", "askglm": "glm"}

@@ -30,6 +30,9 @@ class SecurityRegressions(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="askai-security-fix-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
+        store = patch("askai_cli.credentials.store_path", return_value=self.root / "credentials.json")
+        store.start()
+        self.addCleanup(store.stop)
         self.home = self.root / "home"
         self.home.mkdir()
 

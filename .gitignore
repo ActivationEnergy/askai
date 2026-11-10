@@ -223,3 +223,8 @@ __marimo__/
 .local/
 .venv/
 *.py[cod]
+
+# API credential storage (also excluded from distributions).
+credentials.json
+credentials.lock
+.credentials-*.tmp

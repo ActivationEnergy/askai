@@ -16,7 +16,7 @@ For example, the AI might suggest:
 nl -ba notes.txt
 ```
 
-The explanation describes the key options: `-ba` numbers every line, including blank lines, and the result is printed to the terminal. Enter `c1` to copy the first command, `1` to run it, or press Enter to cancel.
+The explanation describes the key options: `-ba` numbers every line, including blank lines, and the result is printed to the terminal. With a single suggestion, press `c` to copy the command, `1` to run it, or press Enter to cancel.
 
 Answers may vary. **Read commands before running them: AI suggestions can be wrong.** The interface and generated explanations currently use Simplified Chinese, including when you ask in English. This document explains the controls in English.
 
@@ -59,7 +59,7 @@ Development and validation currently focus on macOS. Linux has not completed ful
 **1. Prepare an AI service.** Choose either approach:
 
 - Already using Codex, DSH, or Claude Code? Install and sign in through that program first. askai reuses its login state.
-- Using an API? Set the service's key in your terminal, for example `DEEPSEEK_API_KEY`. See [Choose an AI](#choose-an-ai).
+- Using an API? Run `askai-config` to paste the service's key, or use an existing environment variable. See [Choose an AI](#choose-an-ai).
 
 **2. Check your setup.**
 
@@ -67,7 +67,7 @@ Development and validation currently focus on macOS. Linux has not completed ful
 askai doctor
 ```
 
-This checks whether programs and API-key environment variables are present. It does not verify that your account can successfully call a model.
+This checks whether programs are available and API keys are configured. It does not verify that your account can successfully call a model.
 
 **3. Ask a question.**
 
@@ -92,9 +92,13 @@ askai offers one or more options, each with a command and a short explanation. U
 | `p1` | Print its command to the terminal without copying or running it |
 | `q` or Enter | Cancel |
 
+With a single suggestion, press `e` to explain, `p` to print, or `c` to copy. For Python scripts, `v` copies the source and `s` saves it. No option number is needed. In a plain terminal, submit the letter with Enter; numbered forms such as `c1` remain accepted.
+
 Commands use bold terminal green; shortcut keys and the active prompt use terminal magenta. Command lines have no added borders, line numbers, or indentation for mouse selection. Shortcuts share one row when space allows and wrap into compact groups in narrower terminals.
 
-In an interactive terminal, number keys execute immediately without Enter. Press `c`, `p`, or `e`, followed by an option number. Esc goes back; q or Enter cancels. Text input still uses Enter to submit. Basic terminals (`TERM=dumb`) retain line-based input.
+In an interactive terminal, number keys execute immediately without Enter for up to 9 suggestions. With 10 suggestions, enter the selection and press Enter. When there are multiple suggestions, press an action letter followed by an option number. Esc goes back; q or Enter cancels. Text input still uses Enter to submit. Basic terminals (`TERM=dumb`) retain line-based input.
+
+Accepted choices remain in terminal scrollback, for example `已选择：c · 复制方案 1`. This records the requested action, not successful execution; results are reported separately. AskAI does not create a separate action-history file.
 
 Replace `1` with `2` for the second option, for example `c2`. If important information is missing, the AI may ask for clarification instead of suggesting a command.
 
@@ -104,12 +108,15 @@ Use these first-level actions to improve an answer:
 
 | Key | Action |
 | --- | --- |
-| `r` | Select a reasoning level and retry; currently supported for DSH |
+| `r` | Select a reasoning level and retry; supported for DSH and Codex |
 | `m` | Select another backend and model, then retry |
 | `a` | Add requirements and press Enter to retry; blank input returns |
-| `b` | Restore the previous successful answer and its settings; shown when available |
+| `b` | View the previous successful answer and its settings; shown when available |
+| `f` | View the next successful answer and its settings; shown when available |
 
-DSH defaults to low reasoning, with off, low, high, and max available. The displayed level is a requested setting, not verified server behavior. API backends offer presets and an explicit model-list fetch; Codex/DSH reuse native settings or an explicitly configured model. Claude uses isolated settings and does not load user/project settings files.
+DSH defaults to low reasoning, with off, low, high, and max available. Codex inherits its native settings by default. Press `r` to request low, medium, high, xhigh, max, or ultra, or return to native settings. Available levels depend on the Codex version and model; a failed request preserves the current answer. The displayed level is a requested setting, not verified server behavior. API backends offer presets and an explicit model-list fetch; Codex/DSH reuse native settings or an explicitly configured model. Claude uses isolated settings and does not load user/project settings files.
+
+`b`/`f` browse saved answers without requesting the model again and restore their question and settings. A successful retry from an older answer replaces its forward history; cancellation and failures preserve it.
 
 Changes apply only to this question. Retries include the original question and previously accepted supplements, without previous model answers. Cancellation, failure, or a clarification-only response preserves the current answer. Selecting unchanged settings makes no additional request.
 
@@ -139,21 +146,17 @@ askdsh "How do I count files in the current directory?"
 
 This connection uses `askds` and is configured separately from DSH. If you only use DSH, you do not need a separate DeepSeek API key.
 
-For DeepSeek, in **fish**:
+Run `askai-config`, open AI models and backends, and select an API service such as DeepSeek or Kimi. The service page separates model selection from API key management. Selecting a model without an available key leads to key setup; cancellation clearly leaves the service incomplete. No model is called automatically. Key management supports:
 
-```fish
-set -gx DEEPSEEK_API_KEY 'your-key'
-askds "How do I check disk usage?"
-```
+- **Import and save from environment**: read the inherited variable and save its key after confirmation; no need to set it again.
+- **Use, paste or replace a local key**: input is masked and saved only after confirmation. Press Enter to reactivate an existing saved key.
+- **Delete the saved local key**: confirm deletion for this API connection only.
 
-In **zsh or bash**:
+Local keys are stored in **plaintext**, not encrypted, in `credentials.json` beside the selected configuration file (normally `~/.config/askai/credentials.json`), with owner-only permissions (0600). An explicitly relative `ASKAI_CONFIG` is based on the starting working directory; confirmation shows the absolute storage path. Keys are not written to `config.toml`, shell configuration, command history or debug output. Replacing a key does not retain a backup of the old value.
 
-```sh
-export DEEPSEEK_API_KEY='your-key'
-askds "How do I check disk usage?"
-```
+Save once to use the key in new terminals and after restarting. Saved keys take precedence over environment variables. Importing or pasting can replace the saved key. Deleting a saved key falls back to the environment if that variable is still set; askai cannot change its parent shell's environment. Saved keys are bound to the API URL and environment variable name, so changing the endpoint does not automatically reuse the previous key.
 
-These settings apply only to the current terminal and programs it starts. askai does not save the key. For other APIs, use the environment variable listed in the table.
+The menu shows the active source without revealing the key. Saving a key or model does not verify account access or automatically call a model. CLI backends continue to use their own credential management.
 
 </details>
 
@@ -264,7 +267,7 @@ If you enabled shell integration, first remove askai's terminal settings through
 brew uninstall --formula ActivationEnergy/tap/askai
 ```
 
-Uninstalling does not automatically delete model configuration, credentials, or backup files.
+Uninstalling does not automatically delete model configuration, credentials, or backup files. Shell `.askai-backup-*` files are retained without automatic rotation. Once recovery is no longer needed, delete only the specific backup paths shown during setup.
 
 ## Common questions
 
@@ -286,4 +289,6 @@ Licensed under the [MIT License](LICENSE). The command-not-found integration app
 
 Python execution, copied commands, and the suggested command for saved scripts use `python3 -I -X utf8`. This ignores PYTHONPATH, user site packages, and implicit imports from the working directory. Explicitly add an import path when required. `__file__` is a temporary path for immediate execution, undefined for inline commands, and the saved path for saved scripts; locate input data via arguments or the working directory.
 
-Version 0.1.4 changes the shell execution exchange protocol. Reopen the terminal or reload the integration once after upgrading. Old integrations fail closed with reload guidance. Without integration, `$SHELL` is a login-shell hint; use `--shell` when running a different nested shell.
+Version 0.1.4 changes the shell execution exchange protocol. Reopen the terminal or reload the integration once after upgrading. Integrations from 0.1.2 onward report a protocol mismatch and reload guidance. Earlier functions may fail with a missing installation path; erase and reload those functions too. Without integration, `$SHELL` is a login-shell hint; use `--shell` when running a different nested shell.
+
+[Release verification workflow](docs/releasing.md) (Chinese).

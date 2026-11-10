@@ -91,6 +91,14 @@ def _validate_json_values(value) -> None:
             pending.extend(item)
 
 
+def json_for_output(value) -> str:
+    """Escape terminal controls without changing decoded JSON or readable Chinese."""
+    encoded = json.dumps(value, ensure_ascii=False, indent=2)
+    return "".join(json.dumps(c, ensure_ascii=True)[1:-1]
+                   if c not in "\n\t" and unicodedata.category(c) in ("Cc", "Cf") else c
+                   for c in encoded)
+
+
 def api_key_env_name(provider: dict) -> str:
     """Validate a configured environment key before any getenv or subprocess."""
     if "api_key_env" not in provider:

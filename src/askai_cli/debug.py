@@ -44,6 +44,15 @@ FIELDS = {
 }
 
 
+def _sensitive_option(value):
+    """Recognize long credential option names without guessing short flags."""
+    if not isinstance(value, str) or not value.startswith("--"):
+        return False
+    name = value[2:].split("=", 1)[0].lower().replace("_", "-")
+    return (bool(re.search(r"(?:^|-)(?:key|token|secret|password|passphrase)(?:-|$)", name))
+            or name in {"apikey", "accesstoken", "refreshtoken", "clientsecret", "authtoken"})
+
+
 class DebugTrace:
     """Write request/response diagnostics to stderr without altering stdout."""
 
@@ -63,6 +72,21 @@ class DebugTrace:
         secrets.update(json.dumps(value, ensure_ascii=True)[1:-1] for value in tuple(secrets))
         secrets.update(json.dumps(value, ensure_ascii=False)[1:-1] for value in tuple(secrets))
         self.secrets = sorted(secrets, key=len, reverse=True)
+
+    def add_argv_secrets(self, argv):
+        """Remember CLI credential values before invocation and echoed failures."""
+        values = []
+        pending = False
+        for item in argv[1:]:
+            if pending:
+                values.append(item)
+                pending = False
+            elif _sensitive_option(item):
+                if "=" in item:
+                    values.append(item.split("=", 1)[1])
+                else:
+                    pending = True
+        self.add_secrets(values)
 
     def redact_text(self, value: str) -> str:
         for secret in self.secrets:
@@ -99,11 +123,19 @@ class DebugTrace:
                 if _budget[0] <= 0:
                     result.append("[嵌套或过长内容已省略]")
                     break
-                result.append("[REDACTED]" if hide_next else self.sanitize(item, _depth + 1, _budget))
                 if hide_next:
+                    result.append("[REDACTED]")
                     _budget[0] -= 1
-                hide_next = isinstance(item, str) and item.lower() in (
-                    "--api-key", "--token", "--password", "--secret", "--access-token")
+                    hide_next = False
+                elif _sensitive_option(item):
+                    _budget[0] -= 1
+                    if "=" in item:
+                        result.append(self.redact_text(item.split("=", 1)[0]) + "=[REDACTED]")
+                    else:
+                        result.append(self.redact_text(item))
+                        hide_next = True
+                else:
+                    result.append(self.sanitize(item, _depth + 1, _budget))
             return result
         if isinstance(value, str):
             return self.redact_text(value)

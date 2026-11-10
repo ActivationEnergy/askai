@@ -26,3 +26,7 @@ Codex 优先，Claude 没有自动顺序，因此即使安装也不会被自动�
 `ProviderSpec.models_source` 与 `models_checked_on` 记录内置型号的来源和核对日期；`reasoning_levels` 只声明适配器已实现的可请求档位，不保证账号或服务端支持。DSH 的默认 `reasoning_effort` 集中在 `defaults`。
 
 Claude 调用使用空 `--setting-sources`，不读取用户、项目或本地设置文件；显式配置的型号通过 `--model` 传递。未指定型号时由隔离运行环境决定，界面不应声称沿用用户设置文件中的型号。
+
+Codex 的 `reasoning_effort` 通过单次 `codex exec -c model_reasoning_effort=...` 传入；未指定时不添加覆盖项。菜单允许恢复沿用原生配置，不写入 Codex 全局配置。可用档位取决于客户端与模型，参见[官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
+
+API 密钥统一由 `credentials.py` 解析：设置菜单、就绪检查、型号目录请求和推理请求共用当前来源。本地密钥与普通配置分离，按 API 地址及环境变量名绑定；环境变量导入或粘贴后持久保存，删除操作显式确认。CLI 登录凭据不进入此存储。

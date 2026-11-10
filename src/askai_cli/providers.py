@@ -2,6 +2,8 @@
 
 import json
 import os
+
+from .credentials import api_key
 import re
 from pathlib import Path
 import shutil
@@ -19,7 +21,7 @@ from .core import AskError, MAX_RESPONSE_BYTES, api_key_env_name, clean_display
 from .debug import CliTiming, DebugTrace
 from .http_transport import fetch
 from .dsh_policy import dsh_patch
-from .registry import AUTO_ORDER, DEFAULTS
+from .registry import AUTO_ORDER, DEFAULTS, reasoning_levels
 
 
 def providers(config: dict) -> dict:
@@ -42,8 +44,7 @@ def providers(config: dict) -> dict:
 
 def available(provider: dict) -> bool:
     if provider.get("type") == "api":
-        key_env = api_key_env_name(provider)
-        return bool(key_env) and bool(os.environ.get(key_env))
+        return bool(api_key(provider))
     executable = provider.get("executable", "")
     return isinstance(executable, str) and bool(executable) and "\x00" not in executable and bool(shutil.which(executable))
 
@@ -125,6 +126,10 @@ def run_cli(argv: list[str], payload: str, timeout: float, trace: DebugTrace | N
     """Bound provider lifetime, including descendants, on timeout or cancellation."""
     if any(not isinstance(arg, str) or "\x00" in arg for arg in argv):
         raise AskError("模型 CLI 参数无效，未启动程序")
+    # Register custom CLI credentials even with debug disabled: nonzero exit
+    # diagnostics may echo argv values without their option labels.
+    trace = trace if trace is not None else DebugTrace()
+    trace.add_argv_secrets(argv)
     try:
         encoded = payload.encode("utf-8")
     except UnicodeEncodeError as exc:
@@ -224,6 +229,9 @@ def cli_answer(provider: dict, model: str | None, system: str, prompt: str,
         raise AskError("model 必须是不含空字符的字符串")
     if kind == "codex":
         started = time.monotonic()
+        effort = provider.get("reasoning_effort")
+        if effort is not None and effort not in reasoning_levels(provider):
+            raise AskError("Codex 的 reasoning_effort 必须为 " + ", ".join(reasoning_levels(provider)))
         web_search = provider.get("web_search", True)
         if not isinstance(web_search, bool):
             raise AskError("Codex 的 web_search 必须为 true 或 false")
@@ -236,6 +244,8 @@ def cli_answer(provider: dict, model: str | None, system: str, prompt: str,
                     "-o", str(output)]
             if model:
                 argv += ["--model", model]
+            if effort is not None:
+                argv += ["-c", "model_reasoning_effort=" + json.dumps(effort)]
             argv += ["-"]
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0:
@@ -325,11 +335,14 @@ def list_api_models(provider: dict, timeout: float = 10) -> list[str]:
     if provider.get("type") != "api":
         raise AskError("此调用方式没有可查询的 API 模型目录；请沿用 CLI 配置或返回选择其他型号")
     base = api_base_url(provider)
-    key = os.environ.get(api_key_env_name(provider), "")
+    key = api_key(provider)
     if not key:
-        raise AskError("尚未设置此 API 的密钥环境变量；请配置密钥后重试")
-    response = fetch(base + "/models", {"Accept": "application/json", "Authorization": "Bearer " + key},
-                     b"", timeout, method="GET")
+        raise AskError("尚未配置此 API 的密钥；请在 askai-config 中选择环境变量或粘贴方式")
+    try:
+        response = fetch(base + "/models", {"Accept": "application/json", "Authorization": "Bearer " + key},
+                         b"", timeout, method="GET")
+    except AskError as exc:
+        raise AskError(DebugTrace(secrets=[key]).redact_text(str(exc))) from None
     if not 200 <= response["status"] < 300:
         raise AskError(f"获取模型列表失败（HTTP {response['status']}）；请检查密钥权限及服务是否支持 /models，或返回选择其他型号")
     try:
@@ -358,7 +371,9 @@ def api_answer(provider: dict, model: str | None, system: str, prompt: str,
     model = model or provider.get("model")
     if not isinstance(model, str) or not model:
         raise AskError("API 后端需要 model")
-    key = os.environ.get(api_key_env_name(provider), "")
+    key = api_key(provider)
+    if trace:
+        trace.add_secrets([key])
     body = {"model": model, "stream": False, "messages": [
         {"role": "system", "content": system}, {"role": "user", "content": prompt}]}
     try:
@@ -402,7 +417,7 @@ def answer(provider: dict, model: str | None, system: str, prompt: str,
            timeout: float, trace: DebugTrace | None = None) -> str:
     key_env = api_key_env_name(provider)
     trace = trace or DebugTrace()
-    trace.add_secrets([os.environ.get(key_env, "")])
+    trace.add_secrets([api_key(provider)])
     method = api_answer if provider.get("type") == "api" else cli_answer
     if trace:
         trace.emit("AI request", {"system_prompt": system, "user_context": prompt})

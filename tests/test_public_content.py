@@ -38,6 +38,25 @@ class PublicContentTests(unittest.TestCase):
         value = b"sample-workstation"
         self.assertIn("local user or host identifier", checker.scan_git_object(value, "blob", {value}))
 
+    def test_complete_public_ssh_urls_are_not_emails_but_other_findings_remain(self):
+        address = b"git" + b"@" + b"github.com"
+        for url in (address + b":owner/repo.git", b"ssh://" + address + b"/owner/repo.git"):
+            self.assertEqual(checker.scan(url, set()), set())
+            self.assertIn("email address", checker.scan(url + b" contact " + self.identity(), set()))
+        self.assertIn("email address", checker.scan(address, set()))
+        self.assertIn("local user or host identifier", checker.scan(address + b":local-person/repo.git", {b"local-person"}))
+        token = b"ghp_" + b"A" * 36
+        self.assertIn("possible access token", checker.scan(address + b":owner/" + token, set()))
+
+    def test_only_explicit_home_username_placeholders_are_exempt(self):
+        prefix = b"/" + b"Users/"
+        for placeholder in (b"...", "…".encode()):
+            self.assertEqual(checker.scan(prefix + placeholder + b"/file", set()), set())
+            self.assertIn("absolute home directory", checker.scan(prefix + b"real/" + placeholder + b"/file", set()))
+            self.assertIn("absolute home directory", checker.scan(prefix + placeholder + b"real/file", set()))
+        path = prefix + b".../" + b"ghp_" + b"A" * 36
+        self.assertIn("possible access token", checker.scan(path, set()))
+
 
 if __name__ == "__main__":
     unittest.main()

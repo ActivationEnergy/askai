@@ -36,7 +36,8 @@ class ProviderSpec:
 
 SPECS = (
     ProviderSpec("codex", "Codex", "askgpt",
-                 {"type": "codex", "executable": "codex", "web_search": True}, 1, 1),
+                 {"type": "codex", "executable": "codex", "web_search": True}, 1, 1,
+                 reasoning_levels=("low", "medium", "high", "xhigh", "max", "ultra")),
     # Claude remains explicit-only, even when its CLI is installed.
     ProviderSpec("claude", "Claude Code", "askcc",
                  {"type": "claude", "executable": "claude"}, 4),

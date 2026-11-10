@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 import unittest
+import tempfile
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
@@ -22,6 +23,13 @@ def response(text):
 
 
 class RetryTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="askai-unit-credentials-")
+        self.addCleanup(temporary.cleanup)
+        store = patch("askai_cli.credentials.store_path", return_value=Path(temporary.name) / "credentials.json")
+        store.start()
+        self.addCleanup(store.stop)
+
     def review(self, actions, request, provider=None, **kwargs):
         original = response('old')
         provider = provider or dict(DEFAULTS['dsh'])
@@ -62,6 +70,62 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[1].args[0].question,
                          'original question\n补充要求：require A\n补充要求：require B')
         self.assertIn('已保留当前答案和设置', output)
+
+    def test_back_and_forward_restore_answers_without_new_requests(self):
+        request = Mock(return_value=response('new'))
+        with patch('askai_cli.retry.select_option', return_value=2):
+            result, select, output = self.review(['r', 'b', 'f', 'run'], request)
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(result[0], response('new'))
+        self.assertNotIn('f', select.call_args_list[1].kwargs['options'])
+        self.assertIn('f', select.call_args_list[2].kwargs['options'])
+        self.assertNotIn('b', select.call_args_list[2].kwargs['options'])
+        self.assertNotIn('f', select.call_args_list[3].kwargs['options'])
+        self.assertEqual(output.count('推理：高'), 2)
+
+    def test_retry_from_old_answer_branches_from_its_question(self):
+        request = Mock(side_effect=[response('discarded'), response('branch')])
+        with patch('askai_cli.retry.read_text', side_effect=['first', 'second']):
+            result, select, output = self.review(['a', 'b', 'a', 'b', 'f', 'run'], request)
+        self.assertEqual(request.call_args_list[1].args[0].question,
+                         'original question\n补充要求：second')
+        self.assertEqual(result[0], response('branch'))
+        self.assertNotIn('f', select.call_args_list[3].kwargs['options'])
+        self.assertIn('回答 3', output)
+        self.assertEqual(request.call_count, 2)
+
+    def test_failed_retry_from_history_preserves_forward_answer(self):
+        for failure in (AskError('failure'), KeyboardInterrupt(), response('unused') | {'commands': []}):
+            with self.subTest(failure=type(failure)):
+                request = Mock(side_effect=[response('new'), failure])
+                with patch('askai_cli.retry.read_text', side_effect=['first', 'failed']):
+                    result, select, _ = self.review(['a', 'b', 'a', 'f', 'run'], request)
+                self.assertEqual(result[0], response('new'))
+                self.assertIn('f', select.call_args_list[3].kwargs['options'])
+
+    def test_switch_to_codex_keeps_reasoning_and_restores_backend_in_history(self):
+        request = Mock(side_effect=[response('codex'), response('high')])
+        def choose(state, *args):
+            return replace(state, name='codex', provider=dict(DEFAULTS['codex']), model=None)
+        with patch('askai_cli.retry.select_model', side_effect=choose), \
+             patch('askai_cli.retry.select_option', return_value=3):
+            result, select, output = self.review(['m', 'r', 'b', 'b', 'f', 'f', 'run'], request)
+        self.assertEqual(result[0], response('high'))
+        self.assertNotIn('reasoning_effort', request.call_args_list[0].args[0].provider)
+        self.assertEqual(request.call_args_list[1].args[0].provider['reasoning_effort'], 'high')
+        self.assertTrue(all('r' in call.kwargs['options'] for call in select.call_args_list))
+        self.assertIn('推理：沿用 Codex 配置', output)
+        self.assertEqual(request.call_count, 2)
+
+    def test_codex_can_restore_native_effort_without_overriding_config(self):
+        request = Mock(return_value=response('native'))
+        with patch('askai_cli.retry.select_option', return_value=0):
+            self.review(['r', 'run'], request, {**DEFAULTS['codex'], 'reasoning_effort': 'high'})
+        self.assertNotIn('reasoning_effort', request.call_args.args[0].provider)
+        request = Mock()
+        with patch('askai_cli.retry.select_option', return_value=0):
+            self.review(['r', 'run'], request, dict(DEFAULTS['codex']))
+        request.assert_not_called()
 
     def test_cancelled_retry_and_empty_answer_do_not_replace_current_answer(self):
         for failure in (KeyboardInterrupt(), AskError('bad response'), response('unused') | {'commands': []}):
@@ -133,6 +197,29 @@ class RetryTests(unittest.TestCase):
 
 
 class RetryPtyTests(unittest.TestCase):
+    def test_switch_to_codex_adjust_effort_and_browse_both_directions(self):
+        fixture = fixtures.EndToEndTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        config = Path(fixture.env['ASKAI_CONFIG'])
+        executable = json.dumps(str(fixture.fake))
+        config.write_text(f'provider="dsh"\n[providers.dsh]\nexecutable={executable}\n'
+                          f'[providers.codex]\nexecutable={executable}\n')
+        count, capture = fixture.path / 'requests', fixture.path / 'captured.json'
+        env = {**fixture.env, 'TERM': 'xterm-256color', 'ASKAI_TEST_REQUEST_COUNT': str(count),
+               'ASKAI_TEST_CAPTURE': str(capture)}
+        status, output = fixtures.terminal([str(fixtures.ASKAI), 'question'], env,
+            ('m', '1', 'r', '4', 'b', 'f', 'p'), timeout=15,
+            prompt_markers=('[默认 q]:', '按编号选择，Esc 返回:', '[默认 q]:',
+                            '按编号选择，Esc 返回:', '[默认 q]:', '[默认 q]:', '[默认 q]:'))
+        self.assertEqual(status, 0, output)
+        self.assertEqual(count.read_text(), '3')
+        self.assertIn('model_reasoning_effort="high"', json.loads(capture.read_text())['argv'])
+        for text in ('已选择：m · 换模型', '已选择：1 · Codex', '已选择：r · 推理强度',
+                     '已选择：4 · 高', '已选择：b · 上一版', '已选择：f · 下一版', '已选择：p · 打印方案 1'):
+            self.assertIn(text, output)
+        self.assertEqual(output.count('回答 3 · 本次使用：Codex'), 2)
+
     def test_dsh_reasoning_is_a_first_level_single_key_action(self):
         fixture = fixtures.EndToEndTests()
         fixture.setUp()

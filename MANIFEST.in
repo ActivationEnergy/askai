@@ -4,7 +4,10 @@ recursive-include bin *
 include docs/dsh-troubleshooting.md
 include docs/references.md
 include docs/backend-registry.md
+include docs/releasing.md
 recursive-include examples *.toml
 recursive-include tests *.json
 recursive-include packaging *.rb
 recursive-include scripts *.py
+
+global-exclude credentials.json credentials.lock .credentials-*.tmp

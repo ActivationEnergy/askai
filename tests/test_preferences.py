@@ -92,7 +92,7 @@ api_key_env = "MY_SECRET_ENV"
         self.assertEqual(Path(backups[0]).stat().st_mode & 0o777, 0o600)
 
     def test_menu_save_cancel_and_default_return_to_ai_list(self):
-        output = self.wizard("3\n2\n4\n1\napi-test\ny\n3\n2\n1\ndsh-test\ny\nd3\ny\nd2\nn\n0\n0\n")
+        output = self.wizard("3\n2\n1\n4\n1\napi-test\ny\n0\n0\n3\n2\n1\ndsh-test\ny\nd3\ny\nd2\nn\n0\n0\n")
         config = core.load_config()
         self.assertEqual(config["provider"], "dsh")
         self.assertEqual(config["providers"]["deepseek"]["model"], "api-test")
@@ -114,7 +114,7 @@ api_key_env = "MY_SECRET_ENV"
 
     def test_api_and_cli_reset_and_restore_automatic_default(self):
         self.config.write_text('provider="dsh"\n[providers.codex]\nmodel="custom"\n[providers.deepseek]\nmodel="api-custom"\n')
-        self.wizard("3\n1\n1\ny\n2\n1\ny\nd8\ny\n0\n0\n")
+        self.wizard("3\n1\n1\ny\n2\n1\n1\ny\n0\n0\nd8\ny\n0\n0\n")
         config = core.load_config()
         self.assertEqual(config["provider"], "auto")
         self.assertEqual(config["providers"]["codex"]["model"], "")

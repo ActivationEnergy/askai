@@ -12,6 +12,8 @@ executable = "codex"
 # 默认可查询官方网页以核实安装步骤等信息；关闭时设为 false。
 web_search = true
 # model = "你的 Codex 模型名"
+# 不设置时沿用 Codex 配置；回答后可按 r 临时调整。档位依模型和客户端而定。
+# reasoning_effort = "high"  # low / medium / high / xhigh / max / ultra
 
 [providers.claude]
 # 仅在 askai --provider claude 或默认 provider 明确指定时调用。
@@ -44,7 +46,7 @@ base_url = "https://open.bigmodel.cn/api/paas/v4"
 api_key_env = "GLM_API_KEY"
 model = "glm-5.3"
 
-# 其他 OpenAI 兼容服务（密钥只从环境变量读取）:
+# 其他 OpenAI 兼容服务（密钥通过 askai-config 管理，也可从环境变量读取）:
 # [providers.local]
 # type = "api"
 # base_url = "http://localhost:1234/v1"

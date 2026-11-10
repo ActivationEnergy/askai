@@ -2,16 +2,19 @@
 
 from dataclasses import dataclass, replace
 import os
+
+from .credentials import api_key
 import subprocess
 
 from .core import AskError, api_key_env_name
-from .interaction import clear_pending_input, read_choice, read_text, supports_keys
+from .interaction import clear_pending_input, read_choice, read_text, record_choice, supports_keys
 from .providers import available, list_api_models, model_id_allowed, providers
 from .registry import DEFAULTS, MENU_ORDER, common_models, display_name, reasoning_levels, implicit_model_label
 from .terminal import Terminal
 
 
-EFFORT_LABELS = {"off": "关闭", "low": "低", "high": "高", "max": "最高"}
+EFFORT_LABELS = {None: "沿用 Codex 配置", "off": "关闭", "low": "低", "medium": "中",
+                 "high": "高", "xhigh": "更高（xhigh）", "max": "最高（max）", "ultra": "超高（ultra）"}
 
 
 @dataclass(frozen=True)
@@ -40,19 +43,30 @@ def select_option(title, labels, reader, writer):
         if start + 9 < len(labels):
             keys["n"] = "下一页"
         ui.line("  ".join(f"{key} {label}" for key, label in keys.items()))
-        if supports_keys(reader, writer):
-            value = read_choice(reader, writer, len(items), extra=keys, option_mode=True)
+        single_keys = supports_keys(reader, writer)
+        if single_keys:
+            value = read_choice(reader, writer, len(items), extra=keys, option_mode=True, labels=items)
         else:
             clear_pending_input(reader)
             ui.prompt("请选择 [0]: ")
-            value = reader.readline().strip()
+            line = reader.readline()
+            entered = line.strip() or ("Enter" if line else "EOF")
+            value = line.strip().lower()
         if value in ("", "0", "q"):
+            if not single_keys:
+                record_choice(writer, entered, "返回")
             return None
         if value == "n" and "n" in keys:
+            if not single_keys:
+                record_choice(writer, entered, keys[value])
             page += 1
         elif value == "p" and "p" in keys:
+            if not single_keys:
+                record_choice(writer, entered, keys[value])
             page -= 1
         elif len(value) == 1 and value.isascii() and value.isdigit() and 1 <= int(value) <= len(items):
+            if not single_keys:
+                record_choice(writer, entered, items[int(value) - 1])
             return start + int(value) - 1
 
 
@@ -70,7 +84,7 @@ def select_model(state, config, reader, writer):
     api = provider.get("type") == "api"
     if provider.get("type") == "command":
         return replace(state, name=name, provider=provider, model=None)
-    key = os.environ.get(api_key_env_name(provider), "") if api else ""
+    key = api_key(provider) if api else ""
     choices = [(m.label, m.id) for m in common_models(name, provider)]
     current = state.model if name == state.name and state.model else provider.get("model")
     if current and model_id_allowed(current, key) and all(value != current for _, value in choices):
@@ -111,14 +125,17 @@ def review_answers(data, name, provider, model, question, config, reader, writer
     """
     ui = Terminal(writer)
     state = AnswerState(name, dict(provider), model, question, data)
-    history = []
+    history = [state]
+    position = 0
     next_version = 2
     while True:
         levels = reasoning_levels(state.provider)
+        if state.provider.get("type") == "codex":
+            levels = (None, *levels)
         effort = state.provider.get("reasoning_effort", DEFAULTS.get(state.provider.get("type"), {}).get("reasoning_effort")) if levels else None
         chosen = state.model or state.provider.get("model") or implicit_model_label(state.provider)
         if state.provider.get("type") == "api":
-            secret = os.environ.get(api_key_env_name(state.provider), "")
+            secret = api_key(state.provider)
             if secret and secret in str(chosen):
                 chosen = "型号设置已隐藏（疑似凭据）"
         label = f"回答 {state.version} · 本次使用：{display_name(state.name)} · {chosen}"
@@ -128,8 +145,10 @@ def review_answers(data, name, provider, model, question, config, reader, writer
         actions = {"m": "换模型", "a": "补充要求"}
         if levels:
             actions = {"r": "推理强度", **actions}
-        if history:
+        if position > 0:
             actions["b"] = "上一版"
+        if position + 1 < len(history):
+            actions["f"] = "下一版"
         action, index, destination = select_action(state.answer, reader, writer, shell, options=actions)
         if action == "retry-menu":
             continue
@@ -142,16 +161,24 @@ def review_answers(data, name, provider, model, question, config, reader, writer
                 ui.notice("操作未完成", str(exc), "error")
                 ui.line("答案已保留，可选择其他操作或退出。")
                 continue
-        if action == "b":
-            state = history.pop()
+        if action in ("b", "f"):
+            position += -1 if action == "b" else 1
+            state = history[position]
             continue
         proposed = None
         try:
             if action == "r":
+                if state.provider.get("type") == "codex":
+                    ui.line("可用档位取决于 Codex 版本与模型；请求失败时保留当前答案。")
                 labels = [EFFORT_LABELS[value] + ("（当前）" if value == effort else "") for value in levels]
                 selected = select_option("推理强度 · 选择后重新回答", labels, reader, writer)
                 if selected is not None and levels[selected] != effort:
-                    proposed = replace(state, provider={**state.provider, "reasoning_effort": levels[selected]})
+                    next_provider = dict(state.provider)
+                    if levels[selected] is None:
+                        next_provider.pop("reasoning_effort", None)
+                    else:
+                        next_provider["reasoning_effort"] = levels[selected]
+                    proposed = replace(state, provider=next_provider)
             elif action == "m":
                 proposed = select_model(state, config, reader, writer)
                 if proposed and (proposed.name, proposed.provider, proposed.model or proposed.provider.get("model")) == (state.name, state.provider, state.model or state.provider.get("model")):
@@ -174,6 +201,7 @@ def review_answers(data, name, provider, model, question, config, reader, writer
             ui.notice("重新回答失败", str(exc), "error")
             ui.line("已保留当前答案和设置。")
             continue
-        history.append(state)
         state = replace(proposed, answer=answer, version=next_version)
+        history = history[:position + 1] + [state]
+        position += 1
         next_version += 1

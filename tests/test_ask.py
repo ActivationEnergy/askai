@@ -114,6 +114,13 @@ def terminal(argv, env, inputs=("1\n",), timeout=15, prompt_markers=None):
 
 
 class ModelOutputTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="askai-unit-credentials-")
+        self.addCleanup(temporary.cleanup)
+        store = patch("askai_cli.credentials.store_path", return_value=Path(temporary.name) / "credentials.json")
+        store.start()
+        self.addCleanup(store.stop)
+
     def test_python_protocol_rejects_ambiguous_or_unsupported_scripts(self):
         item = python_script()
         self.assertEqual(parse_answer(json.dumps(response(commands=[item])))["commands"], [item])
@@ -377,13 +384,13 @@ else:
         source = f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
         item = python_script(source, ["two words", "$literal"])
         self.env.update(ASKAI_COMMAND_FILE=str(selected), ASKAI_TEST_ANSWER=json.dumps(response(commands=[item])))
-        for choice in ("c1\n", "r1\n"):
+        for choice in ("c\n", "v\n"):
             code, output = terminal([str(ASKAI), "Python task"], self.env, (choice,))
             self.assertEqual(code, 0, output)
             self.assertFalse(marker.exists())
             self.assertEqual(selected.read_text(), "")
             copied = captured.read_text()
-            if choice.startswith("r"):
+            if choice.startswith("v"):
                 self.assertEqual(copied, source)
             else:
                 copied_argv = shlex.split(copied)
@@ -392,7 +399,7 @@ else:
                 self.assertEqual(copied_argv[6:], item["args"])
                 self.assertNotIn("askai-python-", copied)
         saved = self.path / "saved script.py"
-        code, output = terminal([str(ASKAI), "Python task"], self.env, ("s1\n", str(saved) + "\n"))
+        code, output = terminal([str(ASKAI), "Python task"], self.env, ("s\n", str(saved) + "\n"))
         self.assertEqual(code, 0, output)
         self.assertEqual(saved.read_text(), source)
         self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
@@ -441,7 +448,7 @@ else:
                 "details": "这段详细解释不会被复制或执行。"}
         self.env.update(ASKAI_COMMAND_FILE=str(selected),
                         ASKAI_TEST_ANSWER=json.dumps(response(commands=[item])))
-        code, output = terminal([str(ASKAI), "test question"], self.env, ("c1\n",))
+        code, output = terminal([str(ASKAI), "test question"], self.env, ("c\n",))
         self.assertEqual(code, 0, output)
         self.assertEqual(captured.read_text(), f"touch {marker}")
         self.assertEqual(selected.read_text(), "")
@@ -637,6 +644,24 @@ else:
             provider["web_search"] = "false"
             with self.assertRaisesRegex(AskError, "web_search 必须"):
                 cli_answer(provider, None, "system", "question", 5)
+
+    def test_codex_reasoning_override_is_per_invocation_and_validated(self):
+        capture = self.path / "codex-effort.json"
+        provider = {"type": "codex", "executable": str(self.fake)}
+        with patch.dict(os.environ, {**self.env, "ASKAI_TEST_CAPTURE": str(capture)}):
+            for effort in (None, 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'):
+                current = dict(provider) if effort is None else {**provider, 'reasoning_effort': effort}
+                cli_answer(current, None, "system", "question", 5)
+                argv = json.loads(capture.read_text())['argv']
+                overrides = [value for value in argv if value.startswith('model_reasoning_effort=')]
+                self.assertEqual(overrides, [] if effort is None else ['model_reasoning_effort=' + json.dumps(effort)])
+                self.assertIn('read-only', argv)
+                self.assertIn('shell_tool', argv)
+            with patch('askai_cli.providers.run_cli') as run:
+                for invalid in ('off', '', 'unknown', True, ['high']):
+                    with self.subTest(invalid=invalid), self.assertRaisesRegex(AskError, 'reasoning_effort'):
+                        cli_answer({**provider, 'reasoning_effort': invalid}, None, 'system', 'question', 5)
+                run.assert_not_called()
 
     def test_cli_timeout_is_bounded(self):
         with self.assertRaisesRegex(AskError, "超时"):
