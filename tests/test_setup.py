@@ -257,7 +257,7 @@ class ShellSetupIntegrationTests(unittest.TestCase):
     def test_settings_cli_then_real_shells_without_prefix(self):
         with tempfile.TemporaryDirectory(prefix="askai-wizard-") as folder:
             path = Path(folder)
-            env = {**os.environ, "XDG_STATE_HOME": str(path / "state"), "ASKAI_NO_SETUP": "1",
+            env = {**os.environ, "TERM": "xterm-256color", "XDG_STATE_HOME": str(path / "state"), "ASKAI_NO_SETUP": "1",
                    "PATH": str(fixtures.ROOT / "bin") + os.pathsep + os.environ["PATH"]}
             model = path / "model.py"
             model.write_text("import sys,json\nsys.stdin.read()\nprint(" + repr(json.dumps(fixtures.response())) + ")\n")
@@ -272,8 +272,8 @@ class ShellSetupIntegrationTests(unittest.TestCase):
                     rc = path / ("config." + shell)
                     executable = shutil.which(shell)
                     args = [str(fixtures.ROOT / "bin/askai-config"), "--shell", shell, "--startup-file", str(rc), "--executable", executable]
-                    code, output = fixtures.terminal(args, env, ("4\n", "1\n", "y\n", "0\n", "0\n"),
-                                                    prompt_markers=("[0]: ", "[0]: ", "确认应用以上变更？[y/N]: ", "[0]: ", "[0]: "))
+                    code, output = fixtures.terminal(args, env, ("4", "1", "y", "0", "0"),
+                                                    prompt_markers=("[0]:", "[0]:", "确认应用以上变更？[y/N]:", "[0]:", "[0]:"))
                     self.assertEqual(code, 0, output)
                     self.assertIsNotNone(startup.locate(rc.read_text()))
                     flags = {"fish": ["--no-config"], "zsh": ["-f"], "bash": ["--noprofile", "--norc"]}[shell]
@@ -284,8 +284,8 @@ class ShellSetupIntegrationTests(unittest.TestCase):
                     result = subprocess.run([*args, "--status"], env=env, capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn("已配置 " + shell, result.stdout)
-                    code, output = fixtures.terminal(args, env, ("2\n", "6\n", "y\n", "0\n", "0\n"),
-                                                    prompt_markers=("[0]: ", "[0]: ", "确认应用以上变更？[y/N]: ", "[0]: ", "[0]: "))
+                    code, output = fixtures.terminal(args, env, ("2", "6", "y", "0", "0"),
+                                                    prompt_markers=("[0]:", "[0]:", "确认应用以上变更？[y/N]:", "[0]:", "[0]:"))
                     self.assertEqual(code, 0, output)
                     self.assertFalse(rc.exists())
 

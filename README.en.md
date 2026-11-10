@@ -94,7 +94,7 @@ askai offers one or more options, each with a command and a short explanation. U
 
 With a single suggestion, press `e` to explain, `p` to print, or `c` to copy. For Python scripts, `v` copies the source and `s` saves it. No option number is needed. In a plain terminal, submit the letter with Enter; numbered forms such as `c1` remain accepted.
 
-Commands use bold terminal green; shortcut keys and the active prompt use terminal magenta. Command lines have no added borders, line numbers, or indentation for mouse selection. Shortcuts share one row when space allows and wrap into compact groups in narrower terminals.
+Commands use bold terminal green; shortcut keys and the active prompt use terminal magenta. Command lines have no added borders, line numbers, or indentation for mouse selection. Shortcuts share one row when space allows and wrap by shortcut in narrower terminals.
 
 In an interactive terminal, number keys execute immediately without Enter for up to 9 suggestions. With 10 suggestions, enter the selection and press Enter. When there are multiple suggestions, press an action letter followed by an option number. Esc goes back; q or Enter cancels. Text input still uses Enter to submit. Basic terminals (`TERM=dumb`) retain line-based input.
 
@@ -193,6 +193,8 @@ askai-config
 ```
 
 The menu lets you view configuration, select a shell, configure AI connections, and enable or disable direct questions. **Changes are shown before saving and require confirmation; backups are kept.** Selecting a shell here does not change your system's default shell.
+
+In `askai-config`, enter `q` at any menu or save confirmation to exit settings, or `0` to return one level. Confirmed changes remain saved; pending changes are discarded. Free-text fields such as paths, model IDs and keys treat `q` as literal input. In normal interactive terminals, menu keys, d-number default selection and y/n confirmations need no Enter and leave a choice record. Text entry, model catalog filtering, lists with numeric IDs above 9 and basic terminals retain Enter submission.
 
 ### Ask without typing askai
 

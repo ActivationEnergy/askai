@@ -7,7 +7,7 @@ from .credentials import api_key
 import subprocess
 
 from .core import AskError, api_key_env_name
-from .interaction import clear_pending_input, read_choice, read_text, record_choice, supports_keys
+from .interaction import read_line, read_choice, read_text, record_choice, supports_keys
 from .providers import available, list_api_models, model_id_allowed, providers
 from .registry import DEFAULTS, MENU_ORDER, common_models, display_name, reasoning_levels, implicit_model_label
 from .terminal import Terminal
@@ -47,9 +47,7 @@ def select_option(title, labels, reader, writer):
         if single_keys:
             value = read_choice(reader, writer, len(items), extra=keys, option_mode=True, labels=items)
         else:
-            clear_pending_input(reader)
-            ui.prompt("请选择 [0]: ")
-            line = reader.readline()
+            line = read_line("输入后回车 · 请选择 [0]: ", reader, writer, strip=False) or ""
             entered = line.strip() or ("Enter" if line else "EOF")
             value = line.strip().lower()
         if value in ("", "0", "q"):

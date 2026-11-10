@@ -6,7 +6,7 @@ import json
 import os
 
 from .credentials import api_key, source_label, stored_key, save_key, store_path, validate_key
-from .interaction import read_secret
+from .interaction import read_secret, read_choice, supports_keys, read_line, record_choice, UnsafeTerminalInput
 from pathlib import Path
 import re
 import stat
@@ -170,9 +170,7 @@ def maybe_hint() -> None:
 
 
 def _read(reader, writer, prompt: str) -> str | None:
-    Terminal(writer).prompt(prompt)
-    line = reader.readline()
-    return line.strip() if line else None
+    return read_line(prompt, reader, writer)
 
 
 def build_changes(shell: str, paths: list[Path], state: dict, hook: bool, aliases: bool,
@@ -213,11 +211,16 @@ class _EndSetup(Exception):
     """EOF ends the entire local session without confirming pending changes."""
 
 
+class _QuitSetup(_EndSetup):
+    """An explicit menu action exits every level without confirming changes."""
+
+
 class Wizard:
     """Keep navigation local: completing a child action returns to its parent."""
 
     def __init__(self, args, reader, writer):
         self.reader, self.writer = reader, writer
+        self._menu_options = {}
         self.ui = Terminal(writer)
         self.explicit_color = args.color
         detected = args.shell or os.environ.get("ASKAI_SHELL") or Path(os.environ.get("SHELL", "")).name
@@ -230,14 +233,49 @@ class Wizard:
 
     def menu(self, text):
         self.ui.menu(text)
+        # Register the same explicit keys and labels that are displayed.
+        for line in text.splitlines():
+            match = re.match(r"^([0-9]+|[a-z])\s+(.+)$", line)
+            if match:
+                self._menu_options[match[1]] = match[2]
 
-    def ask(self, prompt="请选择 [0]: "):
-        answer = _read(self.reader, self.writer, prompt)
+    def ask(self, prompt="请选择 [0]: ", *, allow_quit=True, options=None, default="0", force_line=False):
+        choices, self._menu_options = self._menu_options, {}
+        if options is not None:
+            choices = options
+        if allow_quit:
+            prompt = "q 退出设置 · " + prompt
+        immediate = allow_quit and not force_line and bool(choices) and supports_keys(self.reader, self.writer)
+        try:
+            immediate = immediate and os.isatty(self.reader.fileno()) and os.isatty(self.writer.fileno())
+        except (AttributeError, OSError, ValueError):
+            immediate = False
+        # Numeric IDs with overlapping prefixes need line input (e.g. 1 and 10).
+        if any(key.isdecimal() and len(key) > 1 for key in choices):
+            immediate = False
+        if allow_quit:
+            prompt = ("按键选择（无需回车） · " if immediate else "输入后回车 · ") + prompt
+        if immediate:
+            answer = read_choice(self.reader, self.writer, 0, menu_options=choices,
+                                 menu_prompt=prompt, menu_default=default)
+        else:
+            answer = (read_line(prompt, self.reader, self.writer) if allow_quit
+                      else _read(self.reader, self.writer, prompt))
+            if allow_quit and answer is not None:
+                key = answer.casefold() if answer else default
+                label = "退出设置" if key == "q" else choices.get(key)
+                if label is not None:
+                    record_choice(self.writer, answer or "Enter", label)
+                    answer = key
         if answer is None:
             raise _EndSetup
+        if allow_quit and answer.casefold() == "q":
+            raise _QuitSetup
         return answer
 
     def error(self, exc):
+        if isinstance(exc, UnsafeTerminalInput):
+            raise exc
         self.ui.notice("本次操作未完成", str(exc), "error")
         self.say("未确认的设置不会保存，可以继续选择。")
 
@@ -347,7 +385,7 @@ class Wizard:
                 defaults = self.selected_paths()
             except AskError as exc:
                 self.say(str(exc))
-                value = self.ask("启动文件绝对路径（回车取消）: ")
+                value = self.ask("启动文件绝对路径（回车取消）: ", allow_quit=False)
                 if not value:
                     self.say("已取消路径修改。")
                     return False
@@ -356,13 +394,13 @@ class Wizard:
                 edited.append(Path(value))
                 defaults = []
             for path in defaults:
-                answer = self.ask(f"启动文件路径（回车保留 {path}）: ")
+                answer = self.ask(f"启动文件路径（回车保留 {path}）: ", allow_quit=False)
                 if any(ord(c) < 32 for c in answer):
                     raise AskError("配置路径不能包含控制字符")
                 edited.append(expand_path(answer).absolute() if answer else path)
             self.paths[self.shell] = edited
         current = self.executables.get(self.shell) or self.shell
-        value = self.ask(f"{self.shell} 程序路径（回车保留 {current}）: ")
+        value = self.ask(f"{self.shell} 程序路径（回车保留 {current}）: ", allow_quit=False)
         self.executables[self.shell] = startup.interpreter(self.shell, value or current)
         return True
 
@@ -403,7 +441,7 @@ class Wizard:
                         else:
                             self.say(line)
                 self.menu("y 确认保存\nn 不保存并返回上一级\np 更换配置文件和程序\ne 更换 Shell 程序")
-                answer = self.ask("确认应用以上变更？[y/N]: ").lower()
+                answer = self.ask("确认应用以上变更？[y/N]: ", default="n").lower()
                 if answer == "p":
                     if not self.edit_paths():
                         return
@@ -488,6 +526,8 @@ class Wizard:
                             self.say(f"  状态：{status}")
                         else:
                             self.writer.write("  " + self.ui.text("!", "attention") + " " + self.ui.text("状态：") + self.ui.text(status, "attention") + "\n")
+                    self._menu_options[str(number)] = description
+                    self._menu_options[f"d{number}"] = "设为默认：" + description
                     self.say()
                 self.say("状态仅检查程序或密钥是否存在，不验证登录与连接。")
                 self.say("先选择调用方式，再设置具体模型；输入 d编号设为默认（如 d3）。")
@@ -517,7 +557,7 @@ class Wizard:
                         self.model_menu(name)
             except (AskError, OSError, RuntimeError) as exc:
                 self.error(exc)
-                if self.ask("输入 1 重试读取 AI 配置，0 返回主菜单 [0]: ") != "1":
+                if self.ask("输入 1 重试读取 AI 配置，0 返回主菜单 [0]: ", options={"1": "重试", "0": "返回主菜单"}) != "1":
                     return
 
     def api_menu(self, name):
@@ -556,7 +596,7 @@ class Wizard:
             choice = self.ask()
             if choice in ("", "0"):
                 if not api_key(provider):
-                    self.say("尚未完成配置：缺少 API 密钥，此服务暂不可用于提问。")
+                    self.ui.notice("尚未完成配置", "缺少 API 密钥，此服务暂不可用于提问。", "attention")
                 return
             if choice not in ("1", "2", "3"):
                 self.say("请选择菜单中的编号。")
@@ -592,7 +632,7 @@ class Wizard:
             validate_key(value)
         else:
             if not variable or not os.environ.get(variable):
-                self.say(f"当前进程未检测到 {variable or '指定环境变量'}；可以直接选择粘贴密钥。")
+                self.ui.notice("无法导入密钥", f"当前进程未检测到 {variable or '指定环境变量'}；可以直接选择粘贴密钥。", "attention")
                 return
             value = validate_key(os.environ[variable])
             self.say(f"将从环境变量 {variable} 导入并保存密钥，以后无需再次设置环境变量。")
@@ -600,11 +640,11 @@ class Wizard:
                 self.say("将替换此连接已保存的密钥，不保留旧密钥备份。")
         self.say(f"API 地址：{base}\n保存位置：{store_path().absolute()}")
         self.say("专用密钥文件：仅当前用户可读写（0600），明文未加密；不写入 config.toml 或 Shell 启动文件。")
-        if self.ask("确认密钥设置？[y/N]: ").lower() != "y":
+        if self.ask("确认密钥设置？[y/N]: ", options={"y": "确认密钥设置", "n": "不保存"}, default="n").lower() != "y":
             self.say("未保存，密钥未改变。")
             return
         if providers(core.load_config()).get(name) != provider:
-            self.say("连接设置已变化，未保存；请重新选择。")
+            self.ui.notice("未保存密钥", "连接设置已变化；请重新选择。", "attention")
             return
         save_key(provider, value)
         self.say("密钥设置已更新（未验证连接）。")
@@ -714,8 +754,9 @@ class Wizard:
                 self.menu(f"{number} {model}")
             if not matches:
                 self.say("没有匹配的模型；可重新筛选或返回模型选择。")
-            self.menu("编号选择 · /关键词筛选（单独 / 清除）· n下一页 · p上一页 · 0返回")
-            answer = self.ask()
+            self.menu("编号选择 · /关键词筛选（单独 / 清除）· n下一页 · p上一页 · 0返回（输入后回车）")
+            self._menu_options.update({"n": "下一页", "p": "上一页", "0": "返回模型选择"})
+            answer = self.ask(force_line=True)
             if answer in ("", "0"):
                 return None
             if answer.startswith("/"):
@@ -747,7 +788,7 @@ class Wizard:
                     self.say(f"设置已经相同，返回{destination}。")
                     return
                 self.menu(f"y 确认保存，返回{destination}\nn 不保存，返回{destination}")
-                answer = self.ask("保存？[y/N]: ").lower()
+                answer = self.ask("保存？[y/N]: ", default="n").lower()
                 if answer != "y":
                     self.say(f"已取消本次修改，返回{destination}。")
                     return
@@ -759,7 +800,7 @@ class Wizard:
                 return True
             except (AskError, OSError, RuntimeError) as exc:
                 self.error(exc)
-                if self.ask(f"输入 1 重新预览，0 返回{destination} [0]: ") != "1":
+                if self.ask(f"输入 1 重新预览，0 返回{destination} [0]: ", options={"1": "重新预览", "0": "返回"}) != "1":
                     return
 
     def color_menu(self):
@@ -816,6 +857,7 @@ def main(argv=None, reader=None, writer=None) -> int:
         try:
             config = core.load_config()
             configure(config, args.color)
+            wizard.ui = Terminal(writer)
             items = providers(config)
         except (AskError, OSError, RuntimeError) as exc:
             config_error = exc
@@ -842,11 +884,14 @@ def main(argv=None, reader=None, writer=None) -> int:
         return 0 if success else 1
     config = core.load_config()
     configure(config, args.color)
+    wizard.ui = Terminal(writer)
     if not reader.isatty() or not writer.isatty():
         raise AskError("设置向导需要交互终端；脚本可使用 askai-config --status")
-    wizard.say("修改文件前会展示将保存的设置，由你确认。每层菜单可继续操作，输入 0 返回；EOF 退出，未确认的修改不保存。")
+    wizard.say("修改文件前会展示将保存的设置，由你确认。每层菜单输入 0 返回，q 直接退出设置；EOF 退出，未确认的修改不保存。")
     try:
         wizard.run()
+    except _QuitSetup:
+        wizard.say("已退出设置；已保存的设置保留，未确认的修改已取消。")
     except _EndSetup:
         wizard.say("输入已结束，未确认的修改已取消。")
     return 0

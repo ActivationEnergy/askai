@@ -120,7 +120,7 @@ def choose(data: dict, reader, writer, shell: str = "bash", *, options=None) -> 
             ui.notice("注意", item["warning"])
     if not data["commands"]:
         return "cancel", None
-    from .interaction import clear_pending_input, read_choice, record_choice, supports_keys
+    from .interaction import read_line, read_choice, record_choice, supports_keys
     options = options or {}
     has_scripts = any(is_script(item) for item in data["commands"])
     single_answer = len(data["commands"]) == 1
@@ -141,9 +141,7 @@ def choose(data: dict, reader, writer, shell: str = "bash", *, options=None) -> 
         if single_keys:
             line = read_choice(reader, writer, len(data["commands"]), has_scripts, extra=options)
         else:
-            clear_pending_input(reader)
-            ui.prompt("q取消 [默认 q]: ")
-            line = reader.readline()
+            line = read_line("输入后回车 · q取消 [默认 q]: ", reader, writer, strip=False) or ""
         value = line.strip().lower()
         entered = line.strip() or ("Enter" if line else "EOF")
         if not line or value in ("", "q", "quit"):
