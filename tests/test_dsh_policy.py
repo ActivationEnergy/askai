@@ -25,10 +25,11 @@ class DshPolicyTests(unittest.TestCase):
         value = dsh_patch(model)
         for expected in ("mode: read-only", "policy: never", "defaultPreset: read-only",
                          "- id: credentials\n  disabled: false", "- id: askai-no-tools",
-                         "inject: [headlessStartup, askaiToolGuard, askaiCallSettings]", "mode: native",
+                         "inject: [headlessStartup, askaiToolGuard, askaiCallSettings]", "- id: tools\n  config: {}",
                          json.dumps(str(PLUGIN)), json.dumps(model)):
             self.assertIn(expected, value)
         self.assertNotIn("--permission-mode", value)
+        self.assertNotIn("mode: native", value)
         with patch("askai_cli.dsh_policy.Path.is_file", return_value=False), self.assertRaises(AskError):
             dsh_patch()
 
@@ -78,40 +79,58 @@ const ctx=new Context();
 ctx.provide('systemPrompt',{tools(){},section(){},getSectionOrder(){return 0;}});
 ctx.plugin(ToolRuntime);
 await new Promise(resolve=>setTimeout(resolve,0));
+// DSH 0.2.2 moved execution out of the registry into a separate plugin.
+const separateExecutor=typeof ctx.tools.setExecutor==='function';
+if(separateExecutor) {
+  ctx.plugin(await import(new URL('../../dsh-tool-executor-native/lib/index.js',process.argv[3])));
+  await new Promise(resolve=>setTimeout(resolve,0));
+}
+const guardReason=()=> (ctx.tools.checkGuards ?? ctx.tools.guardReason).call(ctx.tools,{});
 let calls=0;
 function fixture(name){return {
   name,description:'harmless fixture',parameters:{type:'object',properties:{},additionalProperties:false},
   output:{schema:{type:'string'},render(args,value){return [{type:'text',text:value}];}},
   async execute(){calls++;return 'ran';}
 };}
-const input=(name,agent)=>({callId:name,name,arguments:{},signal:new AbortController().signal,...(agent?{agent}:{})});
+async function execute(name,agent) {
+  const input={signal:new AbortController().signal,...(agent?{agent}:{})};
+  if(separateExecutor) {
+    const batch=await ctx.tools.execute({...input,calls:[{id:name,name,arguments:'{}'}]});
+    assert.equal(batch.results.length,1);
+    return batch.results[0].result;
+  }
+  return ctx.tools.execute({...input,callId:name,name,arguments:{}});
+}
 try {
   ctx.tools.register(fixture('global_fixture'));
-  const before=await ctx.tools.execute(input('global_fixture'));
+  const before=await execute('global_fixture');
   assert.equal(before.isError,false);assert.equal(calls,1);
   let driverReady=false;
   ctx.plugin({name:'fake-headless-driver',inject:['askaiToolGuard'],apply(c){
     assert(c.get('askaiToolGuard').noTools);
-    assert.equal(typeof ctx.tools.guardReason({}),'string');driverReady=true;
+    assert.equal(typeof guardReason(),'string');driverReady=true;
   }});
   await new Promise(resolve=>setTimeout(resolve,0));assert.equal(driverReady,false);
   ctx.plugin(guard);
   await new Promise(resolve=>setTimeout(resolve,0));assert(driverReady);
   // Another pre-execute handler cannot force allow past a monotonic guard.
   ctx.on('tools/pre-execute',()=>({kind:'allow'}));
-  const denied=await ctx.tools.execute(input('global_fixture'));
+  const denied=await execute('global_fixture');
   assert.equal(denied.isError,true);assert.equal(calls,1);
   // Future global registrations are also covered by the existing guard.
   ctx.tools.register(fixture('late_fixture'));
-  assert.equal((await ctx.tools.execute(input('late_fixture'))).isError,true);
+  assert.equal((await execute('late_fixture')).isError,true);
   assert.equal(calls,1);
   const agent={};agent.ctx=createScope(ctx,agent).ctx;
   await ctx.serial(scopeTarget(agent,agent),'agent/created',{agent,source:'fresh'});
-  assert.equal(ctx.tools.wireSchemas(agent).schemas.length,0);
+  const description=separateExecutor
+    ? ctx.tools.selectExecutor(agent).describe(ctx.tools.definitions(agent))
+    : ctx.tools.wireSchemas(agent);
+  assert.equal(description.schemas.length,0);
   // A scope-local tool is exempt from inherited schema masks, but never from
   // the global execution guard.
   agent.ctx.get('tools').register(fixture('scoped_fixture'));
-  assert.equal((await ctx.tools.execute(input('scoped_fixture',agent))).isError,true);
+  assert.equal((await execute('scoped_fixture',agent)).isError,true);
   assert.equal(calls,1);
   console.log('PASS: real DSH registry denies existing/late/scoped tool bodies and hides inherited schemas');
 } finally { await ctx.fiber.dispose(); }
@@ -130,7 +149,8 @@ try {
             driver.write_text('''export const name="fixture-driver";
 export const inject=["tools","askaiToolGuard"];
 export function apply(ctx){
-  if(!ctx.get("askaiToolGuard")?.noTools || typeof ctx.tools.guardReason({})!=="string") throw Error("guard absent");
+  const reason=(ctx.tools.checkGuards ?? ctx.tools.guardReason).call(ctx.tools,{});
+  if(!ctx.get("askaiToolGuard")?.noTools || typeof reason!=="string") throw Error("guard absent");
   process.stdout.write("ASKAI_GUARD_READY\\n");
   process.exit(0);
 }

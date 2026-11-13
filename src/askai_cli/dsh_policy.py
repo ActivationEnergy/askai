@@ -43,8 +43,7 @@ def dsh_patch(model: str | None = None, system: str | None = None, reasoning_eff
 - id: deepseek-account
   disabled: false
 - id: tools
-  config:
-    mode: native
+  config: {}
 - id: system-prompt
   config:
     personaPrefix: ''' + json.dumps(persona, ensure_ascii=True) + '''
@@ -54,6 +53,8 @@ def dsh_patch(model: str | None = None, system: str | None = None, reasoning_eff
 - id: headless-runner
   inject: [headlessStartup, askaiToolGuard, askaiCallSettings]
 '''
+    # Reset legacy tools config: <=0.2.1 defaults to native; >=0.2.2 rejects
+    # tools.mode and mounts the native executor separately in the base profile.
     # DSH id-targeted config patches replace the whole config, not individual
     # fields. Keep the native provider/model config and override its getter only
     # within this process, after the original service has activated.

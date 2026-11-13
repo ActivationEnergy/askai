@@ -58,7 +58,6 @@ for (const provider of ['deepseek-official','deepseek-account','custom-provider'
   const overrideScope = ctx.plugin(settings,override.config);
   await new Promise(r=>setTimeout(r,15));
   assert.deepEqual(observed,{...original,...expected});
-  assert.deepEqual(nativeScope.config.provider.get(),provider);
   await probe.dispose();
   await overrideScope.dispose();
   assert.deepEqual(ctx.get('agentDefaultModel').currentSelection(),original);

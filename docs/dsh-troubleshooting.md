@@ -1,4 +1,14 @@
-# DSH 网页启动后提示模型列表 HTTP 401
+# DSH 排查说明
+
+## askdsh 启动失败：`$.mode expected nullable but got native`
+
+DSH 0.2.2 将工具执行拆为独立插件，移除了 `tools.mode` 配置。旧版 AskAI 的临时补丁仍写入 `mode: native`，因此 `tools` 插件校验失败，依赖它的其他插件也无法启动。这发生在请求模型之前，与提问内容、Fish 环境变量或账号认证无关。
+
+修复后的 AskAI 使用 `tools` 的空配置覆盖旧字段，沿用 headless profile 提供的原生执行器，同时继续通过工具守卫禁止模型执行工具。这只影响本次调用，不修改 DSH 保存的配置和凭据。遇到此错误应更新 AskAI 的兼容修复，无需删除 `~/.dsh` 或重新登录。
+
+来源：[DSH 0.2.2-rc.1 发布说明](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-rc.1)。
+
+## DSH 网页启动后提示模型列表 HTTP 401
 
 `dsh web: http://127.0.0.1:3080/…` 表示网页服务已启动。随后出现：
 
